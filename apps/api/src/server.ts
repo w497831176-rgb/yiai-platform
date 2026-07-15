@@ -1,4 +1,5 @@
 import Fastify, { type FastifyInstance } from 'fastify';
+import { pathToFileURL } from 'node:url';
 import { env } from './env.js';
 import { pool, checkDatabaseConnection } from './db.js';
 import { healthRoutes } from './routes/health.js';
@@ -23,4 +24,11 @@ export async function startServer(): Promise<void> {
   const app = await buildApp();
   const address = await app.listen({ port: env.PORT, host: '0.0.0.0' });
   app.log.info(`Server listening at ${address}`);
+}
+
+if (import.meta.url === pathToFileURL(process.argv[1]).href) {
+  startServer().catch((err: unknown) => {
+    console.error(err);
+    process.exit(1);
+  });
 }
