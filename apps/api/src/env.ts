@@ -11,4 +11,5 @@ export const env = {
   DB_PASSWORD: process.env.YIAI_PLATFORM_DB_PASSWORD ?? '',
   DB_NAME: process.env.YIAI_PLATFORM_DB_NAME ?? 'yiai_platform',
   DATABASE_URL: process.env.YIAI_PLATFORM_DATABASE_URL,
+  JWT_SECRET: process.env.YIAI_PLATFORM_JWT_SECRET ?? '',
 };

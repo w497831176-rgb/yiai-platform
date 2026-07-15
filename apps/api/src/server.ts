@@ -2,29 +2,25 @@ import Fastify, { type FastifyInstance } from 'fastify';
 import { env } from './env.js';
 import { pool, checkDatabaseConnection } from './db.js';
 import { healthRoutes } from './routes/health.js';
+import { authRoutes } from './routes/auth.js';
 
 export async function buildApp(): Promise<FastifyInstance> {
   const app = Fastify({
     logger: true,
   });
 
-  await app.register(healthRoutes, { dependencies: { checkDatabaseConnection } });
+  app.get('/', () => {
+    return { status: 'ok', service: 'yiai-platform-api' };
+  });
+
+  app.register(healthRoutes, { prefix: '/api/health', dependencies: { checkDatabaseConnection } });
+  app.register(authRoutes, { prefix: '/api/auth', pool });
 
   return app;
 }
 
-async function start(): Promise<void> {
+export async function startServer(): Promise<void> {
   const app = await buildApp();
-
-  try {
-    await app.listen({ port: env.PORT, host: '0.0.0.0' });
-  } catch (error) {
-    app.log.error(error);
-    await pool.end();
-    process.exit(1);
-  }
-}
-
-if (import.meta.url === `file://${process.argv[1]}`) {
-  await start();
+  const address = await app.listen({ port: env.PORT, host: '0.0.0.0' });
+  app.log.info(`Server listening at ${address}`);
 }

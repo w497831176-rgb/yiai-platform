@@ -3,10 +3,11 @@ import { render, screen } from '@testing-library/react';
 import App from './App';
 
 describe('App', () => {
-  it('renders the platform name and initialization message', () => {
+  it('renders the login page by default', () => {
     render(<App />);
 
-    expect(screen.getByText('YIAI Platform')).toBeInTheDocument();
-    expect(screen.getByText('系统初始化完成')).toBeInTheDocument();
+    expect(screen.getByRole('heading', { name: 'Login' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Login' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Register' })).toBeInTheDocument();
   });
 });
