@@ -43,3 +43,72 @@ export interface ChangePasswordRequest {
   currentPassword: string;
   newPassword: string;
 }
+
+export interface YiaiApp {
+  id: string;
+  slug: string;
+  name: string;
+  description: string | null;
+  icon: string | null;
+  sort_order: number;
+  requires_new_conversation_inputs: boolean;
+  created_at: string;
+  updated_at: string;
+}
+
+export type UserInputFormType = 'text-input' | 'paragraph' | 'select';
+
+export interface UserInputFormOption {
+  label: string;
+  value: string;
+}
+
+export interface UserInputFormField {
+  type: UserInputFormType;
+  label: string;
+  variable: string;
+  required: boolean;
+  default?: string;
+  options?: UserInputFormOption[];
+}
+
+export interface AppBootstrap {
+  app: YiaiApp;
+  opening_statement: string | null;
+  suggested_questions: string[] | null;
+  user_input_form: UserInputFormField[] | null;
+}
+
+export interface YiaiConversation {
+  id: string;
+  name: string;
+  inputs: Record<string, unknown>;
+  status: string;
+  updated_at: number;
+  created_at: number;
+}
+
+export interface YiaiMessageFile {
+  type: string;
+  url: string;
+}
+
+export interface YiaiMessage {
+  id: string;
+  conversation_id: string;
+  query: string;
+  answer: string;
+  message_files?: YiaiMessageFile[] | null;
+  created_at: number;
+}
+
+export interface ChatRequest {
+  query: string;
+  conversation_id?: string;
+  inputs?: Record<string, unknown>;
+}
+
+export interface ChatStreamEvent {
+  event: string;
+  data?: Record<string, unknown>;
+}

@@ -17,7 +17,8 @@
     "dev:api": "npm run dev -w apps/api",
     "db:migrate": "node db/migrations/migrate.js",
     "db:migrate:test": "cross-env NODE_ENV=test node db/migrations/migrate.js",
-    "admin:create": "node scripts/create-admin.cjs"
+    "admin:create": "node scripts/create-admin.cjs",
+    "seed:test-apps": "node scripts/seed-test-apps.cjs"
   },
   "devDependencies": {
     "@eslint/js": "^9.22.0",
