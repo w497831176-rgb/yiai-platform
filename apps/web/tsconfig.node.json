@@ -1,0 +1,10 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "outDir": "./dist",
+    "rootDir": ".",
+    "tsBuildInfoFile": "./dist/.tsbuildinfo.node",
+    "composite": true
+  },
+  "include": ["vite.config.ts", "vitest.config.ts"]
+}

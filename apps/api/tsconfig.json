@@ -1,0 +1,11 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "outDir": "./dist",
+    "rootDir": ".",
+    "tsBuildInfoFile": "./dist/.tsbuildinfo",
+    "types": ["vitest/globals", "node"]
+  },
+  "include": ["src/**/*", "tests/**/*", "vitest.config.ts"],
+  "references": [{ "path": "../../packages/shared" }]
+}
