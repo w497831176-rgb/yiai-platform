@@ -6,11 +6,11 @@ services:
     container_name: yiai-platform-prod-db
     restart: unless-stopped
     environment:
-      POSTGRES_USER: ${YIAI_PLATFORM_DB_USER}
-      POSTGRES_PASSWORD: ${YIAI_PLATFORM_DB_PASSWORD}
-      POSTGRES_DB: ${YIAI_PLATFORM_DB_NAME}
+      POSTGRES_USER: ${YIAI_PLATFORM_DB_USER:?YIAI_PLATFORM_DB_USER is required}
+      POSTGRES_PASSWORD: ${YIAI_PLATFORM_DB_PASSWORD:?YIAI_PLATFORM_DB_PASSWORD is required}
+      POSTGRES_DB: ${YIAI_PLATFORM_DB_NAME:?YIAI_PLATFORM_DB_NAME is required}
     volumes:
-      - /volume3/docker/volumes/yiai-platform-prod:/var/lib/postgresql/data
+      - ${YIAI_PLATFORM_PROD_DATA_ROOT:-/volume3/docker/volumes/yiai-platform-prod}:/var/lib/postgresql/data
     networks:
       - yiai-platform-prod-net
     healthcheck:
@@ -18,6 +18,26 @@ services:
       interval: 10s
       timeout: 5s
       retries: 5
+
+  migrate:
+    build:
+      context: .
+      dockerfile: Dockerfile.api
+    container_name: yiai-platform-prod-migrate
+    restart: "no"
+    environment:
+      NODE_ENV: production
+      YIAI_PLATFORM_DB_HOST: db
+      YIAI_PLATFORM_DB_PORT: 5432
+      YIAI_PLATFORM_DB_USER: ${YIAI_PLATFORM_DB_USER:?YIAI_PLATFORM_DB_USER is required}
+      YIAI_PLATFORM_DB_PASSWORD: ${YIAI_PLATFORM_DB_PASSWORD:?YIAI_PLATFORM_DB_PASSWORD is required}
+      YIAI_PLATFORM_DB_NAME: ${YIAI_PLATFORM_DB_NAME:?YIAI_PLATFORM_DB_NAME is required}
+    command: ["node", "db/migrations/migrate.js"]
+    depends_on:
+      db:
+        condition: service_healthy
+    networks:
+      - yiai-platform-prod-net
 
   api:
     build:
@@ -30,13 +50,14 @@ services:
       YIAI_PLATFORM_API_PORT: 3000
       YIAI_PLATFORM_DB_HOST: db
       YIAI_PLATFORM_DB_PORT: 5432
-      YIAI_PLATFORM_DB_USER: ${YIAI_PLATFORM_DB_USER}
-      YIAI_PLATFORM_DB_PASSWORD: ${YIAI_PLATFORM_DB_PASSWORD}
-      YIAI_PLATFORM_DB_NAME: ${YIAI_PLATFORM_DB_NAME}
-      YIAI_PLATFORM_JWT_SECRET: ${YIAI_PLATFORM_JWT_SECRET}
+      YIAI_PLATFORM_DB_USER: ${YIAI_PLATFORM_DB_USER:?YIAI_PLATFORM_DB_USER is required}
+      YIAI_PLATFORM_DB_PASSWORD: ${YIAI_PLATFORM_DB_PASSWORD:?YIAI_PLATFORM_DB_PASSWORD is required}
+      YIAI_PLATFORM_DB_NAME: ${YIAI_PLATFORM_DB_NAME:?YIAI_PLATFORM_DB_NAME is required}
     depends_on:
       db:
         condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
     networks:
       - yiai-platform-prod-net
 

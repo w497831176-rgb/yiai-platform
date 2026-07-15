@@ -65,23 +65,41 @@ npm install
 
 ### 数据库迁移
 
-确保 `.env` 中已配置数据库连接信息，然后执行：
+本地开发时，确保 `.env` 中已配置数据库连接信息，然后执行：
 
 ```bash
 npm run db:migrate
 ```
 
-迁移脚本位于 `db/migrations/`，会按文件名顺序执行未应用的 `.sql` 文件，并记录到 `migrations` 表。
+容器化部署时，`compose.test.yml` 与 `compose.prod.yml` 已包含一次性 `migrate` 服务，会在数据库健康后自动执行迁移并退出。
 
 ## Docker Compose
+
+启动前必须创建 `.env` 并设置必填变量：
+
+```bash
+cp .env.example .env
+# 编辑 .env，填写真实值
+```
+
+必填变量：
+
+- `YIAI_PLATFORM_DB_USER`
+- `YIAI_PLATFORM_DB_PASSWORD`
+- `YIAI_PLATFORM_DB_NAME`
+
+可选覆盖：
+
+- `YIAI_PLATFORM_TEST_DATA_ROOT`（测试数据目录，默认 `/volume3/docker/volumes/yiai-platform-test`）
+- `YIAI_PLATFORM_PROD_DATA_ROOT`（生产数据目录，默认 `/volume3/docker/volumes/yiai-platform-prod`）
 
 ### 测试环境
 
 ```bash
 # 启动
-docker compose -f compose.test.yml up -d
+docker compose -f compose.test.yml --env-file .env up -d --build
 
-# 停止
+# 停止（不删除数据卷）
 docker compose -f compose.test.yml down
 
 # 查看配置
@@ -92,9 +110,9 @@ docker compose -f compose.test.yml config
 
 ```bash
 # 启动
-docker compose -f compose.prod.yml up -d
+docker compose -f compose.prod.yml --env-file .env up -d --build
 
-# 停止
+# 停止（不删除数据卷）
 docker compose -f compose.prod.yml down
 
 # 查看配置
@@ -109,6 +127,7 @@ docker compose -f compose.prod.yml config
 - 前端容器：`yiai-platform-test-web`
 - 后端容器：`yiai-platform-test-api`
 - 数据库容器：`yiai-platform-test-db`
+- 迁移容器：`yiai-platform-test-migrate`
 - Docker 网络：`yiai-platform-test-net`
 - 前端宿主机端口：`18111`
 
@@ -118,6 +137,7 @@ docker compose -f compose.prod.yml config
 - 前端容器：`yiai-platform-prod-web`
 - 后端容器：`yiai-platform-prod-api`
 - 数据库容器：`yiai-platform-prod-db`
+- 迁移容器：`yiai-platform-prod-migrate`
 - Docker 网络：`yiai-platform-prod-net`
 - 前端宿主机端口：`18113`
 
@@ -134,12 +154,14 @@ YIAI Platform 的所有 NAS 代码、bind mount 数据和备份路径均位于 `
 
 严禁使用 `/volume1/docker/*` 路径。
 
+## 当前部署状态
+
+- 当前仅部署测试环境。
+- 当前未连接 Dify。
+- 当前未实现登录、聊天、Token 账本、admin 后台、Workflow。
+
 ## 安全约定
 
 - Dify API Key 永远只能由后端调用，浏览器端不得保存、展示、请求或接触 Dify API Key。
 - `.env.example` 仅包含安全占位符，请勿提交真实密码、Key 或 Token。
-
-## 状态说明
-
-- 当前未初始化 Git、未推送 Git、未部署 NAS、未连接 Dify。
-- 当前未实现登录、聊天、Token 账本和 admin 后台。
+- 公开仓库禁止包含 `.env`、密码、GitHub Token、Dify API Key、JWT 密钥或数据库数据。
