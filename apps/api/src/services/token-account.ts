@@ -25,6 +25,31 @@ export interface TokenLedgerEntry {
   created_at: Date;
 }
 
+function toNumber(value: unknown): number {
+  if (typeof value === 'number') {
+    return value;
+  }
+  if (typeof value === 'string') {
+    return Number(value);
+  }
+  return Number(value);
+}
+
+function normalizeTokenAccount(row: TokenAccount): TokenAccount {
+  return {
+    ...row,
+    gift_tokens: toNumber(row.gift_tokens),
+    recharge_tokens: toNumber(row.recharge_tokens),
+  };
+}
+
+function normalizeLedgerEntry(row: TokenLedgerEntry): TokenLedgerEntry {
+  return {
+    ...row,
+    delta_tokens: toNumber(row.delta_tokens),
+  };
+}
+
 export function getShanghaiDateString(date: Date): string {
   return new Intl.DateTimeFormat('en-CA', {
     timeZone: TIMEZONE,
@@ -39,7 +64,7 @@ function toDateString(value: Date | string | null): string | null {
     return null;
   }
   if (value instanceof Date) {
-    return value.toISOString().slice(0, 10);
+    return getShanghaiDateString(value);
   }
   return value;
 }
@@ -77,7 +102,7 @@ export async function getOrCreateTokenAccount(pool: Pool, userId: string): Promi
     `,
     [userId]
   );
-  return result.rows[0];
+  return normalizeTokenAccount(result.rows[0]);
 }
 
 export async function ensureDailyGift(pool: Pool, userId: string, now = new Date()): Promise<TokenAccount> {
@@ -137,7 +162,7 @@ export async function ensureDailyGift(pool: Pool, userId: string, now = new Date
     await client.query('COMMIT');
 
     const refreshed = await pool.query<TokenAccount>('SELECT * FROM token_accounts WHERE user_id = $1', [userId]);
-    return refreshed.rows[0];
+    return normalizeTokenAccount(refreshed.rows[0]);
   } catch (error) {
     await client.query('ROLLBACK');
     throw error;
@@ -177,7 +202,7 @@ export async function rechargeTokens(
     await client.query('COMMIT');
 
     const refreshed = await pool.query<TokenAccount>('SELECT * FROM token_accounts WHERE user_id = $1', [userId]);
-    return refreshed.rows[0];
+    return normalizeTokenAccount(refreshed.rows[0]);
   } catch (error) {
     await client.query('ROLLBACK');
     throw error;
@@ -206,7 +231,7 @@ export async function deductForUsage(
     throw new Error(`Token account not found for user ${userId}`);
   }
 
-  const account = accountResult.rows[0];
+  const account = normalizeTokenAccount(accountResult.rows[0]);
   const giftDeduction = Math.min(totalTokens, account.gift_tokens);
   const rechargeDeduction = totalTokens - giftDeduction;
 
@@ -253,7 +278,7 @@ export async function getLedgerEntries(pool: Pool, userId: string): Promise<Toke
     `,
     [userId]
   );
-  return result.rows;
+  return result.rows.map(normalizeLedgerEntry);
 }
 
 export async function getAllUserAccounts(
@@ -282,5 +307,9 @@ export async function getAllUserAccounts(
       ORDER BY u.created_at DESC
     `
   );
-  return result.rows;
+  return result.rows.map((row) => ({
+    ...row,
+    gift_tokens: toNumber(row.gift_tokens),
+    recharge_tokens: toNumber(row.recharge_tokens),
+  }));
 }
