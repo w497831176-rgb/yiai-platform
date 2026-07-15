@@ -23,6 +23,7 @@ services:
     build:
       context: .
       dockerfile: Dockerfile.api
+      network: host
     container_name: yiai-platform-test-migrate
     restart: "no"
     environment:
@@ -43,6 +44,7 @@ services:
     build:
       context: .
       dockerfile: Dockerfile.api
+      network: host
     container_name: yiai-platform-test-api
     restart: unless-stopped
     environment:
@@ -65,6 +67,7 @@ services:
     build:
       context: .
       dockerfile: Dockerfile.web
+      network: host
     container_name: yiai-platform-test-web
     restart: unless-stopped
     ports:
