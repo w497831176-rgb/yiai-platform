@@ -1,63 +1,14 @@
-import { describe, it, expect, beforeEach } from 'vitest';
+import { describe, it, expect, beforeEach, vi } from 'vitest';
 import Fastify from 'fastify';
 import { authRoutes } from '../src/routes/auth.js';
-import { hashPassword } from '../src/auth/password.js';
-import type { Pool, QueryResult } from 'pg';
+import type { Pool } from 'pg';
 import type { SafeUser, AuthResponse } from '@yiai/shared';
+import { createInMemoryPool, createTestUser } from './helpers/in-memory-db.js';
 
-interface UserRow {
-  id: string;
-  username: string;
-  password_hash: string;
-  role: 'user' | 'admin';
-  created_at: Date;
-  updated_at: Date;
-}
-
-function createMockPool(initial: UserRow[] = []): Pool {
-  const store = [...initial];
-
-  const query = (sql: string, params?: unknown[]): Promise<QueryResult<UserRow>> => {
-    const lower = sql.toLowerCase();
-
-    if (lower.includes('select') && lower.includes('from users') && lower.includes('where username')) {
-      const user = store.find((u) => u.username === params?.[0]);
-      return Promise.resolve({ rows: user ? [user] : [], rowCount: user ? 1 : 0 } as QueryResult<UserRow>);
-    }
-
-    if (lower.includes('select') && lower.includes('from users') && lower.includes('where id')) {
-      const user = store.find((u) => u.id === params?.[0]);
-      return Promise.resolve({ rows: user ? [user] : [], rowCount: user ? 1 : 0 } as QueryResult<UserRow>);
-    }
-
-    if (lower.includes('insert into users')) {
-      const newUser: UserRow = {
-        id: crypto.randomUUID(),
-        username: params?.[0] as string,
-        password_hash: params?.[1] as string,
-        role: 'user',
-        created_at: new Date(),
-        updated_at: new Date(),
-      };
-      store.push(newUser);
-      return Promise.resolve({ rows: [newUser], rowCount: 1 } as QueryResult<UserRow>);
-    }
-
-    if (lower.includes('update users')) {
-      const id = params?.[1] as string;
-      const user = store.find((u) => u.id === id);
-      if (user) {
-        user.password_hash = params?.[0] as string;
-        user.updated_at = new Date();
-      }
-      return Promise.resolve({ rows: [], rowCount: user ? 1 : 0 } as QueryResult<UserRow>);
-    }
-
-    return Promise.resolve({ rows: [], rowCount: 0 } as QueryResult<UserRow>);
-  };
-
-  return { query } as unknown as Pool;
-}
+vi.mock('../src/auth/password.js', () => ({
+  hashPassword: vi.fn((password: string) => `hashed-${password}`),
+  verifyPassword: vi.fn((plain: string, hash: string) => hash === `hashed-${plain}`),
+}));
 
 async function buildTestApp(pool: Pool) {
   const app = Fastify({ logger: false });
@@ -68,8 +19,8 @@ async function buildTestApp(pool: Pool) {
 describe('Authentication', () => {
   let pool: Pool;
 
-  beforeEach(() => {
-    pool = createMockPool();
+  beforeEach(async () => {
+    pool = await createInMemoryPool();
   });
 
   it('registers a new user successfully', async () => {
@@ -81,10 +32,14 @@ describe('Authentication', () => {
     });
 
     expect(response.statusCode).toBe(201);
-    const body = JSON.parse(response.body) as SafeUser;
-    expect(body.username).toBe('test_user');
-    expect(body.role).toBe('user');
-    expect(body.password_hash).toBeUndefined();
+    const body = JSON.parse(response.body) as AuthResponse;
+    expect(body.user.username).toBe('test_user');
+    expect(body.user.role).toBe('user');
+    expect(body.user.password_hash).toBeUndefined();
+    expect(body.token).toBeDefined();
+
+    const account = await pool.query<{ gift_tokens: number }>('SELECT gift_tokens FROM token_accounts WHERE user_id = $1', [body.user.id]);
+    expect(account.rows[0].gift_tokens).toBe(50000);
   });
 
   it('rejects duplicate username with 409', async () => {
@@ -105,18 +60,8 @@ describe('Authentication', () => {
   });
 
   it('logs in with correct password', async () => {
-    const passwordHash = await hashPassword('123456');
-    pool = createMockPool([
-      {
-        id: 'user-1',
-        username: 'test_user',
-        password_hash: passwordHash,
-        role: 'user',
-        created_at: new Date(),
-        updated_at: new Date(),
-      },
-    ]);
     const app = await buildTestApp(pool);
+    await createTestUser(pool, 'test_user', 'user', '123456');
 
     const response = await app.inject({
       method: 'POST',
@@ -131,18 +76,8 @@ describe('Authentication', () => {
   });
 
   it('rejects login with wrong password', async () => {
-    const passwordHash = await hashPassword('123456');
-    pool = createMockPool([
-      {
-        id: 'user-1',
-        username: 'test_user',
-        password_hash: passwordHash,
-        role: 'user',
-        created_at: new Date(),
-        updated_at: new Date(),
-      },
-    ]);
     const app = await buildTestApp(pool);
+    await createTestUser(pool, 'test_user', 'user', '123456');
 
     const response = await app.inject({
       method: 'POST',
@@ -164,18 +99,8 @@ describe('Authentication', () => {
   });
 
   it('returns current user when logged in', async () => {
-    const passwordHash = await hashPassword('123456');
-    pool = createMockPool([
-      {
-        id: 'user-1',
-        username: 'test_user',
-        password_hash: passwordHash,
-        role: 'user',
-        created_at: new Date(),
-        updated_at: new Date(),
-      },
-    ]);
     const app = await buildTestApp(pool);
+    await createTestUser(pool, 'test_user', 'user', '123456');
 
     const loginResponse = await app.inject({
       method: 'POST',
@@ -196,18 +121,8 @@ describe('Authentication', () => {
   });
 
   it('allows password change and rejects old password', async () => {
-    const passwordHash = await hashPassword('123456');
-    pool = createMockPool([
-      {
-        id: 'user-1',
-        username: 'test_user',
-        password_hash: passwordHash,
-        role: 'user',
-        created_at: new Date(),
-        updated_at: new Date(),
-      },
-    ]);
     const app = await buildTestApp(pool);
+    await createTestUser(pool, 'test_user', 'user', '123456');
 
     const loginResponse = await app.inject({
       method: 'POST',
@@ -249,7 +164,7 @@ describe('Authentication', () => {
     });
 
     expect(response.statusCode).toBe(201);
-    const body = JSON.parse(response.body) as SafeUser;
-    expect(body.role).toBe('user');
+    const body = JSON.parse(response.body) as AuthResponse;
+    expect(body.user.role).toBe('user');
   });
 });

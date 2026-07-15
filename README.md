@@ -1,12 +1,19 @@
 # YIAI Platform
 
-YIAI Platform 是面向 C 端用户的 Dify Chatflow 聚合平台。当前 V0 版本仅搭建工程基础设施，尚未实现业务功能。
+YIAI Platform 是面向 C 端用户的 Dify Chatflow 聚合平台。当前 V1.3 已实现用户登录/注册、应用中心、Chatflow 聊天、双额度 Token 账本、管理员后台等核心功能。
 
 ## 当前支持范围
 
 - 支持的 Dify 聊天类应用：Chatflow、Agent、Chat Assistant
 - 不支持的类型：Workflow（尚未实现）
-- 不实现的功能：登录、注册、聊天、图片上传、Token 账本、Token 扣减、admin 后台、在线支付、真实 Dify 连接
+- 已实现的功能：
+  - 用户注册、登录、JWT 鉴权
+  - 应用中心展示已启用应用
+  - Chatflow 流式聊天（SSE）
+  - 双额度 Token 账本：每日赠送额度（50,000/天，上限 100,000）+ 管理员充值额度
+  - 按上游实际 `total_tokens` 精确扣费
+  - 管理员后台：用户管理、额度充值、应用管理
+- 不实现的功能：图片上传、语音、Annotation、会话重命名/删除、在线支付、Workflow
 
 ## 技术栈
 
@@ -62,6 +69,25 @@ npm install
 | `npm run build` | 构建 shared、web、api |
 | `npm run dev:web` | 本地启动前端开发服务器 |
 | `npm run dev:api` | 本地启动后端开发服务器 |
+
+### 管理员初始化
+
+管理员账号只能通过 `scripts/create-admin.cjs` 脚本创建或提升，前端/HTTP 不提供公开注册入口。
+
+```bash
+# 创建新的 admin 账号
+YIAI_PLATFORM_ADMIN_USERNAME=admin \
+YIAI_PLATFORM_ADMIN_PASSWORD=yourpassword \
+  node scripts/create-admin.cjs
+
+# 将已有用户提升为 admin
+YIAI_PLATFORM_ADMIN_USERNAME=existinguser \
+YIAI_PLATFORM_ADMIN_PASSWORD=anypassword \
+YIAI_PLATFORM_ADMIN_PROMOTE=true \
+  node scripts/create-admin.cjs
+```
+
+脚本默认读取 `.env` 中的数据库连接配置，也支持通过 `YIAI_PLATFORM_DATABASE_URL` 或 `YIAI_PLATFORM_DB_*` 变量覆盖。
 
 ### 数据库迁移
 
@@ -156,9 +182,9 @@ YIAI Platform 的所有 NAS 代码、bind mount 数据和备份路径均位于 `
 
 ## 当前部署状态
 
-- 当前仅部署测试环境。
-- 当前未连接 Dify。
-- 当前未实现登录、聊天、Token 账本、admin 后台、Workflow。
+- 当前仅部署测试环境，生产环境未部署。
+- 已连接 YIAI Chatflow API（`https://yiai.charprint.com/v1`）。
+- V1.3 已实现登录、注册、应用中心、聊天、Token 账本、admin 后台；未实现 Workflow。
 
 ## 安全约定
 

@@ -1,4 +1,4 @@
-import type { Pool } from 'pg';
+import type { Pool, PoolClient } from 'pg';
 import type {
   YiaiApp,
   YiaiConversation,
@@ -282,13 +282,19 @@ export interface UsageRecordPayload {
   totalTokens: number;
 }
 
-export async function recordUsage(pool: Pool, payload: UsageRecordPayload): Promise<void> {
-  await pool.query(
+export async function recordUsage(client: Pool | PoolClient, payload: UsageRecordPayload): Promise<string> {
+  const result = await client.query<{ id: string }>(
     `INSERT INTO yiai_usage_records
      (user_id, app_id, conversation_id, message_id, task_id, total_tokens)
-     VALUES ($1, $2, $3, $4, $5, $6)`,
+     VALUES ($1, $2, $3, $4, $5, $6)
+     RETURNING id`,
     [payload.userId, payload.appId, payload.conversationId, payload.messageId, payload.taskId, payload.totalTokens]
   );
+  const row = result.rows.at(0);
+  if (!row) {
+    throw new Error('Failed to record usage');
+  }
+  return row.id;
 }
 
 export function toSafeApp(app: DbApp | YiaiApp): YiaiApp {

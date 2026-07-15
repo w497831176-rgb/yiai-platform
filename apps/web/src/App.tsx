@@ -76,12 +76,55 @@ interface ChatMessage {
   usage?: number;
 }
 
+interface TokenAccount {
+  gift_tokens: number;
+  recharge_tokens: number;
+  total_tokens: number;
+  daily_gift_amount: number;
+  gift_tokens_max: number;
+  last_gift_date: string | null;
+}
+
+interface LedgerEntry {
+  id: string;
+  created_at: string;
+  entry_type: 'daily_gift' | 'admin_recharge' | 'usage';
+  bucket: 'gift' | 'recharge';
+  delta_tokens: number;
+  note: string | null;
+}
+
+interface AdminUser {
+  id: string;
+  username: string;
+  role: string;
+  gift_tokens: number;
+  recharge_tokens: number;
+  total_tokens: number;
+  created_at: string;
+}
+
+interface AdminApp {
+  id: string;
+  slug: string;
+  name: string;
+  description: string | null;
+  icon: string | null;
+  api_base_url: string;
+  api_key_configured: boolean;
+  enabled: boolean;
+  sort_order: number;
+  requires_new_conversation_inputs: boolean;
+}
+
 type View =
   | { type: 'login' }
   | { type: 'register' }
   | { type: 'profile' }
   | { type: 'hub' }
-  | { type: 'chat'; slug: string };
+  | { type: 'chat'; slug: string }
+  | { type: 'ledger' }
+  | { type: 'admin' };
 
 const TOKEN_KEY = 'yiai_token';
 
@@ -351,27 +394,52 @@ function ProfilePage({
   );
 }
 
+function TokenBadge({ account, onClick }: { account: TokenAccount | null; onClick?: () => void }) {
+  if (!account) {
+    return <span className="token-badge loading">额度加载中...</span>;
+  }
+  return (
+    <button className="token-badge" onClick={onClick} type="button">
+      <span className="token-item gift">赠送 {account.gift_tokens.toLocaleString()}</span>
+      <span className="token-item recharge">充值 {account.recharge_tokens.toLocaleString()}</span>
+      <span className="token-item total">可用 {account.total_tokens.toLocaleString()}</span>
+    </button>
+  );
+}
+
 function AppHub({
   user,
   apps,
+  account,
   onSelectApp,
   onProfile,
   onLogout,
+  onLedger,
+  onAdmin,
 }: {
   user: User;
   apps: YiaiApp[];
+  account: TokenAccount | null;
   onSelectApp: (slug: string) => void;
   onProfile: () => void;
   onLogout: () => void;
+  onLedger: () => void;
+  onAdmin: () => void;
 }) {
   return (
     <div className="hub-page">
       <header className="hub-header">
         <h1>YIAI Platform</h1>
         <div className="user-actions">
-          <span>
+          <TokenBadge account={account} onClick={onLedger} />
+          <span className="user-name">
             {user.username} ({user.role})
           </span>
+          {user.role === 'admin' && (
+            <button className="secondary admin-btn" onClick={onAdmin}>
+              管理后台
+            </button>
+          )}
           <button className="secondary" onClick={onProfile}>
             Profile
           </button>
@@ -380,6 +448,11 @@ function AppHub({
       </header>
       <main className="hub-main">
         <h2>应用中心</h2>
+        {account && (
+          <p className="token-hint">
+            每日赠送 +{account.daily_gift_amount.toLocaleString()} Tokens，赠送额度最多累积至 {account.gift_tokens_max.toLocaleString()} Tokens
+          </p>
+        )}
         <div className="app-grid">
           {apps.map((app) => (
             <button key={app.id} className="app-card" onClick={() => { onSelectApp(app.slug); }}>
@@ -490,11 +563,13 @@ export function ChatPage({
   user: _user,
   onBack,
   onLogout,
+  onRefreshAccount,
 }: {
   slug: string;
   user: User;
   onBack: () => void;
   onLogout: () => void;
+  onRefreshAccount?: () => void;
 }) {
   const [bootstrap, setBootstrap] = useState<AppBootstrap | null>(null);
   const [conversations, setConversations] = useState<YiaiConversation[]>([]);
@@ -687,6 +762,7 @@ export function ChatPage({
             const totalTokens = ((data.metadata as Record<string, unknown> | undefined)?.usage as Record<string, unknown> | undefined)?.total_tokens;
             if (typeof totalTokens === 'number') {
               setUsage(totalTokens);
+              onRefreshAccount?.();
             }
           },
           onError: (data) => {
@@ -827,11 +903,471 @@ export function ChatPage({
   );
 }
 
+function formatEntryType(type: LedgerEntry['entry_type']): string {
+  switch (type) {
+    case 'daily_gift':
+      return '每日赠送';
+    case 'admin_recharge':
+      return '管理员充值';
+    case 'usage':
+      return '使用消耗';
+    default:
+      return type;
+  }
+}
+
+function formatBucket(bucket: LedgerEntry['bucket']): string {
+  return bucket === 'gift' ? '赠送额度' : '充值额度';
+}
+
+function formatDelta(delta: number): string {
+  const sign = delta > 0 ? '+' : '';
+  return `${sign}${delta.toLocaleString()}`;
+}
+
+function LedgerPage({ onBack }: { onBack: () => void }) {
+  const [entries, setEntries] = useState<LedgerEntry[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState('');
+
+  useEffect(() => {
+    setLoading(true);
+    api<LedgerEntry[]>('/token-account/ledger')
+      .then(setEntries)
+      .catch((err: unknown) => {
+        setError(err instanceof Error ? err.message : '加载失败');
+      })
+      .finally(() => {
+        setLoading(false);
+      });
+  }, []);
+
+  return (
+    <div className="ledger-page">
+      <header className="ledger-header">
+        <button className="secondary" onClick={onBack}>
+          ← 返回
+        </button>
+        <h1>额度明细</h1>
+      </header>
+      <main className="ledger-main">
+        {error && <p className="error-banner">{error}</p>}
+        {loading && <p>加载中...</p>}
+        {!loading && entries.length === 0 && <p className="empty">暂无明细</p>}
+        {!loading && entries.length > 0 && (
+          <table className="ledger-table">
+            <thead>
+              <tr>
+                <th>时间</th>
+                <th>类型</th>
+                <th>来源额度</th>
+                <th>变动 Token</th>
+                <th>备注</th>
+              </tr>
+            </thead>
+            <tbody>
+              {entries.map((entry) => (
+                <tr key={entry.id}>
+                  <td>{new Date(entry.created_at).toLocaleString('zh-CN')}</td>
+                  <td>{formatEntryType(entry.entry_type)}</td>
+                  <td>{formatBucket(entry.bucket)}</td>
+                  <td className={entry.delta_tokens > 0 ? 'positive' : 'negative'}>
+                    {formatDelta(entry.delta_tokens)}
+                  </td>
+                  <td>{entry.note ?? '-'}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        )}
+      </main>
+    </div>
+  );
+}
+
+function AdminUsersTab() {
+  const [users, setUsers] = useState<AdminUser[]>([]);
+  const [ledgerUserId, setLedgerUserId] = useState<string | null>(null);
+  const [ledgerEntries, setLedgerEntries] = useState<LedgerEntry[]>([]);
+  const [rechargeUser, setRechargeUser] = useState<AdminUser | null>(null);
+  const [rechargeAmount, setRechargeAmount] = useState('');
+  const [rechargeNote, setRechargeNote] = useState('');
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState('');
+  const [message, setMessage] = useState('');
+
+  const loadUsers = useCallback(async () => {
+    const list = await api<AdminUser[]>('/admin/users');
+    setUsers(list);
+  }, []);
+
+  useEffect(() => {
+    setLoading(true);
+    loadUsers()
+      .catch((err: unknown) => {
+        setError(err instanceof Error ? err.message : '加载失败');
+      })
+      .finally(() => {
+        setLoading(false);
+      });
+  }, [loadUsers]);
+
+  const openLedger = async (userId: string) => {
+    setLedgerUserId(userId);
+    try {
+      const entries = await api<LedgerEntry[]>(`/admin/users/${userId}/ledger`);
+      setLedgerEntries(entries);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : '加载账本失败');
+    }
+  };
+
+  const handleRecharge = (e: React.SyntheticEvent<HTMLFormElement>) => {
+    e.preventDefault();
+    if (!rechargeUser) return;
+    const amount = parseInt(rechargeAmount, 10);
+    if (!Number.isFinite(amount) || amount <= 0) {
+      setError('充值额度必须为正整数');
+      return;
+    }
+    void (async () => {
+      try {
+        await api(`/admin/users/${rechargeUser.id}/recharge`, {
+          method: 'POST',
+          body: JSON.stringify({ amount, note: rechargeNote || undefined }),
+        });
+        setMessage(`已为 ${rechargeUser.username} 充值 ${amount.toLocaleString()} Tokens`);
+        setRechargeUser(null);
+        setRechargeAmount('');
+        setRechargeNote('');
+        await loadUsers();
+      } catch (err: unknown) {
+        setError(err instanceof Error ? err.message : '充值失败');
+      }
+    })();
+  };
+
+  return (
+    <div className="admin-tab">
+      {error && <p className="error-banner">{error}</p>}
+      {message && <p className="success-banner">{message}</p>}
+      {loading && <p>加载中...</p>}
+      {!loading && (
+        <table className="admin-table">
+          <thead>
+            <tr>
+              <th>用户名</th>
+              <th>角色</th>
+              <th>赠送额度</th>
+              <th>充值额度</th>
+              <th>总额度</th>
+              <th>注册时间</th>
+              <th>操作</th>
+            </tr>
+          </thead>
+          <tbody>
+            {users.map((u) => (
+              <tr key={u.id}>
+                <td>{u.username}</td>
+                <td>{u.role}</td>
+                <td>{u.gift_tokens.toLocaleString()}</td>
+                <td>{u.recharge_tokens.toLocaleString()}</td>
+                <td>{u.total_tokens.toLocaleString()}</td>
+                <td>{new Date(u.created_at).toLocaleString('zh-CN')}</td>
+                <td>
+                  <button className="secondary" onClick={() => { void openLedger(u.id); }}>
+                    账本
+                  </button>
+                  <button className="secondary" onClick={() => { setRechargeUser(u); }}>
+                    充值
+                  </button>
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      )}
+
+      {ledgerUserId && (
+        <div className="modal-overlay" onClick={() => { setLedgerUserId(null); }}>
+          <div className="modal wide" onClick={(e) => { e.stopPropagation(); }}>
+            <h3>用户账本</h3>
+            {ledgerEntries.length === 0 && <p className="empty">暂无明细</p>}
+            {ledgerEntries.length > 0 && (
+              <table className="ledger-table">
+                <thead>
+                  <tr>
+                    <th>时间</th>
+                    <th>类型</th>
+                    <th>来源额度</th>
+                    <th>变动 Token</th>
+                    <th>备注</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {ledgerEntries.map((entry) => (
+                    <tr key={entry.id}>
+                      <td>{new Date(entry.created_at).toLocaleString('zh-CN')}</td>
+                      <td>{formatEntryType(entry.entry_type)}</td>
+                      <td>{formatBucket(entry.bucket)}</td>
+                      <td className={entry.delta_tokens > 0 ? 'positive' : 'negative'}>
+                        {formatDelta(entry.delta_tokens)}
+                      </td>
+                      <td>{entry.note ?? '-'}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            )}
+            <div className="modal-actions">
+              <button onClick={() => { setLedgerUserId(null); }}>关闭</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {rechargeUser && (
+        <div className="modal-overlay" onClick={() => { setRechargeUser(null); }}>
+          <div className="modal" onClick={(e) => { e.stopPropagation(); }}>
+            <h3>为 {rechargeUser.username} 充值额度</h3>
+            <form onSubmit={handleRecharge}>
+              <label>
+                充值 Token 数量（正整数）
+                <input
+                  type="number"
+                  min={1}
+                  step={1}
+                  value={rechargeAmount}
+                  onChange={(e) => { setRechargeAmount(e.target.value); }}
+                  required
+                />
+              </label>
+              <label>
+                备注（可选）
+                <input
+                  type="text"
+                  value={rechargeNote}
+                  onChange={(e) => { setRechargeNote(e.target.value); }}
+                />
+              </label>
+              <div className="modal-actions">
+                <button type="button" className="secondary" onClick={() => { setRechargeUser(null); }}>
+                  取消
+                </button>
+                <button type="submit">确认充值</button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function AdminAppsTab() {
+  const [apps, setApps] = useState<AdminApp[]>([]);
+  const [editingApp, setEditingApp] = useState<AdminApp | null>(null);
+  const [newApiKey, setNewApiKey] = useState('');
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState('');
+  const [message, setMessage] = useState('');
+
+  const loadApps = useCallback(async () => {
+    const list = await api<AdminApp[]>('/admin/apps');
+    setApps(list);
+  }, []);
+
+  useEffect(() => {
+    setLoading(true);
+    loadApps()
+      .catch((err: unknown) => {
+        setError(err instanceof Error ? err.message : '加载失败');
+      })
+      .finally(() => {
+        setLoading(false);
+      });
+  }, [loadApps]);
+
+  const handleSave = (e: React.SyntheticEvent<HTMLFormElement>) => {
+    e.preventDefault();
+    if (!editingApp) return;
+    const form = e.currentTarget;
+    const getValue = (name: string): string => {
+      const element = form.elements.namedItem(name);
+      return element instanceof HTMLInputElement ? element.value : '';
+    };
+    const getChecked = (name: string): boolean => {
+      const element = form.elements.namedItem(name);
+      return element instanceof HTMLInputElement ? element.checked : false;
+    };
+    const body: Record<string, unknown> = {
+      name: getValue('name'),
+      description: getValue('description'),
+      icon: getValue('icon'),
+      api_base_url: getValue('api_base_url'),
+      enabled: getChecked('enabled'),
+      sort_order: parseInt(getValue('sort_order') || '0', 10),
+      requires_new_conversation_inputs: getChecked('requires_new_conversation_inputs'),
+    };
+    if (newApiKey.trim()) {
+      body.api_key = newApiKey.trim();
+    }
+    void (async () => {
+      try {
+        await api(`/admin/apps/${editingApp.id}`, {
+          method: 'PATCH',
+          body: JSON.stringify(body),
+        });
+        setMessage(`应用 ${editingApp.slug} 已更新`);
+        setEditingApp(null);
+        setNewApiKey('');
+        await loadApps();
+      } catch (err: unknown) {
+        setError(err instanceof Error ? err.message : '保存失败');
+      }
+    })();
+  };
+
+  return (
+    <div className="admin-tab">
+      {error && <p className="error-banner">{error}</p>}
+      {message && <p className="success-banner">{message}</p>}
+      {loading && <p>加载中...</p>}
+      {!loading && (
+        <table className="admin-table">
+          <thead>
+            <tr>
+              <th>排序</th>
+              <th>标识</th>
+              <th>名称</th>
+              <th>API Key</th>
+              <th>启用</th>
+              <th>新对话采集</th>
+              <th>操作</th>
+            </tr>
+          </thead>
+          <tbody>
+            {apps.map((app) => (
+              <tr key={app.id}>
+                <td>{app.sort_order}</td>
+                <td>{app.slug}</td>
+                <td>{app.name}</td>
+                <td>{app.api_key_configured ? '已配置' : '未配置'}</td>
+                <td>{app.enabled ? '是' : '否'}</td>
+                <td>{app.requires_new_conversation_inputs ? '是' : '否'}</td>
+                <td>
+                  <button className="secondary" onClick={() => { setEditingApp(app); }}>
+                    编辑
+                  </button>
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      )}
+
+      {editingApp && (
+        <div className="modal-overlay" onClick={() => { setEditingApp(null); }}>
+          <div className="modal wide" onClick={(e) => { e.stopPropagation(); }}>
+            <h3>编辑应用：{editingApp.slug}</h3>
+            <form onSubmit={handleSave}>
+              <label>
+                名称
+                <input name="name" type="text" defaultValue={editingApp.name} required />
+              </label>
+              <label>
+                描述
+                <input name="description" type="text" defaultValue={editingApp.description ?? ''} />
+              </label>
+              <label>
+                图标
+                <input name="icon" type="text" defaultValue={editingApp.icon ?? ''} />
+              </label>
+              <label>
+                API Base URL
+                <input name="api_base_url" type="text" defaultValue={editingApp.api_base_url} required />
+              </label>
+              <label>
+                新 API Key（留空保持原值，保存后不回显）
+                <input
+                  type="text"
+                  value={newApiKey}
+                  onChange={(e) => { setNewApiKey(e.target.value); }}
+                  placeholder="留空则不修改"
+                />
+              </label>
+              <label>
+                排序
+                <input name="sort_order" type="number" defaultValue={editingApp.sort_order} required />
+              </label>
+              <label className="checkbox">
+                <input name="enabled" type="checkbox" defaultChecked={editingApp.enabled} />
+                启用
+              </label>
+              <label className="checkbox">
+                <input
+                  name="requires_new_conversation_inputs"
+                  type="checkbox"
+                  defaultChecked={editingApp.requires_new_conversation_inputs}
+                />
+                每次新对话采集用户信息
+              </label>
+              <div className="modal-actions">
+                <button type="button" className="secondary" onClick={() => { setEditingApp(null); }}>
+                  取消
+                </button>
+                <button type="submit">保存</button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function AdminPage({ onBack }: { onBack: () => void }) {
+  const [tab, setTab] = useState<'users' | 'apps'>('users');
+
+  return (
+    <div className="admin-page">
+      <header className="admin-header">
+        <button className="secondary" onClick={onBack}>
+          ← 返回
+        </button>
+        <h1>管理后台</h1>
+      </header>
+      <nav className="admin-nav">
+        <button className={tab === 'users' ? 'active' : ''} onClick={() => { setTab('users'); }}>
+          用户与额度
+        </button>
+        <button className={tab === 'apps' ? 'active' : ''} onClick={() => { setTab('apps'); }}>
+          应用管理
+        </button>
+      </nav>
+      <main className="admin-main">
+        {tab === 'users' && <AdminUsersTab />}
+        {tab === 'apps' && <AdminAppsTab />}
+      </main>
+    </div>
+  );
+}
+
 function App() {
   const [view, setView] = useState<View>({ type: 'login' });
   const [user, setUser] = useState<User | null>(null);
   const [loading, setLoading] = useState(true);
   const [apps, setApps] = useState<YiaiApp[]>([]);
+  const [account, setAccount] = useState<TokenAccount | null>(null);
+
+  const refreshAccount = useCallback(async () => {
+    try {
+      const data = await api<TokenAccount>('/token-account');
+      setAccount(data);
+    } catch {
+      setAccount(null);
+    }
+  }, []);
 
   useEffect(() => {
     const token = localStorage.getItem(TOKEN_KEY);
@@ -848,6 +1384,7 @@ function App() {
       .then((list) => {
         setApps(list);
         setView({ type: 'hub' });
+        void refreshAccount();
       })
       .catch(() => {
         localStorage.removeItem(TOKEN_KEY);
@@ -855,7 +1392,7 @@ function App() {
       .finally(() => {
         setLoading(false);
       });
-  }, []);
+  }, [refreshAccount]);
 
   const handleLogin = (res: AuthResponse) => {
     localStorage.setItem(TOKEN_KEY, res.token);
@@ -865,6 +1402,7 @@ function App() {
         const list = await api<YiaiApp[]>('/apps');
         setApps(list);
         setView({ type: 'hub' });
+        await refreshAccount();
       } catch {
         setView({ type: 'hub' });
       }
@@ -875,6 +1413,7 @@ function App() {
     localStorage.removeItem(TOKEN_KEY);
     setUser(null);
     setApps([]);
+    setAccount(null);
     setView({ type: 'login' });
   };
 
@@ -897,17 +1436,30 @@ function App() {
       {view.type === 'profile' && user && (
         <ProfilePage user={user} onLogout={handleLogout} onBack={() => { setView({ type: 'hub' }); }} />
       )}
+      {view.type === 'ledger' && user && <LedgerPage onBack={() => { setView({ type: 'hub' }); }} />}
+      {view.type === 'admin' && user && user.role === 'admin' && (
+        <AdminPage onBack={() => { setView({ type: 'hub' }); }} />
+      )}
       {view.type === 'hub' && user && (
         <AppHub
           user={user}
           apps={apps}
+          account={account}
           onSelectApp={(slug) => { setView({ type: 'chat', slug }); }}
           onProfile={() => { setView({ type: 'profile' }); }}
           onLogout={handleLogout}
+          onLedger={() => { setView({ type: 'ledger' }); }}
+          onAdmin={() => { setView({ type: 'admin' }); }}
         />
       )}
       {view.type === 'chat' && user && (
-        <ChatPage slug={view.slug} user={user} onBack={() => { setView({ type: 'hub' }); }} onLogout={handleLogout} />
+        <ChatPage
+          slug={view.slug}
+          user={user}
+          onBack={() => { setView({ type: 'hub' }); }}
+          onLogout={handleLogout}
+          onRefreshAccount={() => { void refreshAccount(); }}
+        />
       )}
     </div>
   );

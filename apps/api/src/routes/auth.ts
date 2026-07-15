@@ -101,19 +101,41 @@ export function authRoutes(fastify: FastifyInstance, options: { pool: Pool }): v
       }
 
       const passwordHash = await hashPassword(password);
-      const result = await pool.query<DbUser>(
-        `INSERT INTO users (username, password_hash, role)
-         VALUES ($1, $2, 'user')
-         RETURNING id, username, role, created_at, updated_at`,
-        [username, passwordHash]
-      );
+      const client = await pool.connect();
+      let user: DbUser;
+      try {
+        await client.query('BEGIN');
+        const result = await client.query<DbUser>(
+          `INSERT INTO users (username, password_hash, role)
+           VALUES ($1, $2, 'user')
+           RETURNING id, username, role, created_at, updated_at`,
+          [username, passwordHash]
+        );
 
-      const user = result.rows.at(0);
-      if (!user) {
-        return await reply.status(500).send({ error: 'Internal server error' });
+        const inserted = result.rows.at(0);
+        if (!inserted) {
+          await client.query('ROLLBACK');
+          return await reply.status(500).send({ error: 'Internal server error' });
+        }
+        user = inserted;
+
+        await client.query(
+          'INSERT INTO token_accounts (user_id, gift_tokens, recharge_tokens, last_gift_date) VALUES ($1, 0, 0, NULL)',
+          [user.id]
+        );
+        await client.query('COMMIT');
+      } catch (error) {
+        await client.query('ROLLBACK');
+        throw error;
+      } finally {
+        client.release();
       }
 
-      return await reply.status(201).send(toSafeUser(user));
+      const { ensureDailyGift } = await import('../services/token-account.js');
+      await ensureDailyGift(pool, user.id);
+
+      const token = signToken(toSafeUser(user));
+      return await reply.status(201).send({ token, user: toSafeUser(user) });
     } catch {
       return await reply.status(500).send({ error: 'Internal server error' });
     }
@@ -146,7 +168,7 @@ export function authRoutes(fastify: FastifyInstance, options: { pool: Pool }): v
   });
 
   fastify.get('/me', { preHandler: authenticate }, async (request: FastifyRequest, reply: FastifyReply) => {
-    const userId = request.user?.userId;
+    const userId = request.user?.id;
     if (!userId) {
       return await reply.status(401).send({ error: 'Unauthorized' });
     }
@@ -172,7 +194,7 @@ export function authRoutes(fastify: FastifyInstance, options: { pool: Pool }): v
     '/change-password',
     { preHandler: authenticate },
     async (request: FastifyRequest, reply: FastifyReply) => {
-      const userId = request.user?.userId;
+      const userId = request.user?.id;
       if (!userId) {
         return await reply.status(401).send({ error: 'Unauthorized' });
       }

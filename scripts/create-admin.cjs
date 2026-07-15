@@ -7,6 +7,7 @@ const SALT_ROUNDS = 10;
 
 const adminUsername = process.env.YIAI_PLATFORM_ADMIN_USERNAME;
 const adminPassword = process.env.YIAI_PLATFORM_ADMIN_PASSWORD;
+const shouldPromote = process.env.YIAI_PLATFORM_ADMIN_PROMOTE === 'true' || process.argv.includes('--promote');
 
 if (!adminUsername || !adminPassword) {
   console.error('YIAI_PLATFORM_ADMIN_USERNAME and YIAI_PLATFORM_ADMIN_PASSWORD must be set');
@@ -40,15 +41,22 @@ function getPoolConfig() {
 async function main() {
   const pool = new Pool(getPoolConfig());
   try {
-    const existing = await pool.query('SELECT role FROM users WHERE username = $1', [adminUsername]);
+    const existing = await pool.query('SELECT id, role FROM users WHERE username = $1', [adminUsername]);
     if (existing.rowCount && existing.rowCount > 0) {
       const role = existing.rows[0].role;
       if (role === 'admin') {
-        console.log('Admin user already exists. No changes made.');
+        console.log('User already has admin role. No changes made.');
         return;
       }
-      console.error('User exists but is not admin. Cannot promote to admin automatically.');
-      process.exit(1);
+
+      if (!shouldPromote) {
+        console.error('User exists but is not admin. Use --promote or set YIAI_PLATFORM_ADMIN_PROMOTE=true to promote.');
+        process.exit(1);
+      }
+
+      await pool.query("UPDATE users SET role = 'admin', updated_at = NOW() WHERE username = $1", [adminUsername]);
+      console.log('Existing user promoted to admin successfully.');
+      return;
     }
 
     const hash = await bcrypt.hash(adminPassword, SALT_ROUNDS);

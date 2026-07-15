@@ -5,7 +5,7 @@ import type { SafeUser } from '@yiai/shared';
 const JWT_EXPIRES_IN = '7d';
 
 export interface TokenPayload {
-  userId: string;
+  id: string;
   username: string;
   role: 'user' | 'admin';
 }
@@ -15,7 +15,7 @@ export function signToken(user: SafeUser): string {
     throw new Error('JWT secret is not configured');
   }
   return jwt.sign(
-    { userId: user.id, username: user.username, role: user.role },
+    { id: user.id, username: user.username, role: user.role },
     env.JWT_SECRET,
     { expiresIn: JWT_EXPIRES_IN }
   );

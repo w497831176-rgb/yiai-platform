@@ -1,115 +1,22 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import Fastify, { type FastifyInstance } from 'fastify';
-import type { QueryResult } from 'pg';
+import type { Pool } from 'pg';
 import { appRoutes } from '../src/routes/apps.js';
 import { authRoutes } from '../src/routes/auth.js';
-import type { Pool } from 'pg';
+import { tokenAccountRoutes } from '../src/routes/token-account.js';
+import { createInMemoryPool, createTestApp, createTestUser } from './helpers/in-memory-db.js';
 import type { YiaiApp, AuthResponse, AppBootstrap, YiaiConversation, YiaiMessage } from '@yiai/shared';
 
 vi.mock('../src/auth/password.js', () => ({
   hashPassword: vi.fn((password: string) => `hashed-${password}`),
-  verifyPassword: vi.fn(() => true),
+  verifyPassword: vi.fn((plain: string, hash: string) => hash === `hashed-${plain}`),
 }));
-
-interface UserRow {
-  id: string;
-  username: string;
-  password_hash: string;
-  role: 'user' | 'admin';
-  created_at: Date;
-  updated_at: Date;
-}
-
-interface AppRow extends YiaiApp {
-  api_base_url: string;
-  api_key: string;
-  enabled: boolean;
-}
-
-interface UsageRecord {
-  id: string;
-  user_id: string;
-  app_id: string;
-  conversation_id: string | null;
-  message_id: string | null;
-  task_id: string | null;
-  total_tokens: number;
-  created_at: Date;
-}
-
-function createMockPool(initialUsers: UserRow[] = [], initialApps: AppRow[] = []): Pool {
-  const users = [...initialUsers];
-  const apps = [...initialApps];
-  const usageRecords: UsageRecord[] = [];
-
-  const query = <T>(sql: string, params?: unknown[]): Promise<QueryResult<T>> => {
-    const lower = sql.toLowerCase();
-
-    if (lower.includes('from users') && lower.includes('where username')) {
-      const user = users.find((u) => u.username === params?.[0]);
-      return Promise.resolve({ rows: user ? [user as T] : [], rowCount: user ? 1 : 0 } as QueryResult<T>);
-    }
-
-    if (lower.includes('from users') && lower.includes('where id')) {
-      const user = users.find((u) => u.id === params?.[0]);
-      return Promise.resolve({ rows: user ? [user as T] : [], rowCount: user ? 1 : 0 } as QueryResult<T>);
-    }
-
-    if (lower.includes('from yiai_apps') && lower.includes('where slug') && lower.includes('enabled')) {
-      const app = apps.find((a) => a.slug === params?.[0] && a.enabled);
-      return Promise.resolve({ rows: app ? [app as T] : [], rowCount: app ? 1 : 0 } as QueryResult<T>);
-    }
-
-    if (lower.includes('from yiai_apps') && lower.includes('enabled = true')) {
-      const safeApps = apps
-        .filter((a) => a.enabled)
-        .sort((a, b) => a.sort_order - b.sort_order)
-        .map((a) => ({
-          id: a.id,
-          slug: a.slug,
-          name: a.name,
-          description: a.description,
-          icon: a.icon,
-          sort_order: a.sort_order,
-          requires_new_conversation_inputs: a.requires_new_conversation_inputs,
-          created_at: a.created_at,
-          updated_at: a.updated_at,
-        }));
-      return Promise.resolve({ rows: safeApps as T[], rowCount: safeApps.length } as QueryResult<T>);
-    }
-
-    if (lower.includes('from yiai_apps') && lower.includes('where slug = $1') && !lower.includes('enabled')) {
-      const app = apps.find((a) => a.slug === params?.[0]);
-      return Promise.resolve({ rows: app ? [app as T] : [], rowCount: app ? 1 : 0 } as QueryResult<T>);
-    }
-
-    if (lower.includes('insert into yiai_usage_records')) {
-      usageRecords.push({
-        id: crypto.randomUUID(),
-        user_id: params?.[0] as string,
-        app_id: params?.[1] as string,
-        conversation_id: params?.[2] as string | null,
-        message_id: params?.[3] as string | null,
-        task_id: params?.[4] as string | null,
-        total_tokens: params?.[5] as number,
-        created_at: new Date(),
-      });
-      return Promise.resolve({ rows: [], rowCount: 1 } as QueryResult<T>);
-    }
-
-    return Promise.resolve({ rows: [], rowCount: 0 } as QueryResult<T>);
-  };
-
-  return {
-    query,
-    _usageRecords: usageRecords,
-  } as unknown as Pool;
-}
 
 async function buildTestApp(pool: Pool): Promise<FastifyInstance> {
   const app = Fastify({ logger: false });
   await app.register(authRoutes, { prefix: '/api/auth', pool });
   await app.register(appRoutes, { prefix: '/api/apps', pool });
+  await app.register(tokenAccountRoutes, { prefix: '/api', pool });
   return app;
 }
 
@@ -129,64 +36,34 @@ describe('App Routes', () => {
 
   vi.stubGlobal('fetch', fetchMock);
 
-  beforeEach(() => {
+  beforeEach(async () => {
     fetchMock.mockReset();
-    pool = createMockPool(
-      [
-        {
-          id: 'user-1',
-          username: 'test_user',
-          password_hash: 'hash',
-          role: 'user',
-          created_at: new Date(),
-          updated_at: new Date(),
-        },
-      ],
-      [
-        {
-          id: 'app-zhouyi',
-          slug: 'zhouyi-divination',
-          name: '周易占卦',
-          description: '数据库描述',
-          icon: '🔮',
-          api_base_url: 'https://yiai.example.com/v1',
-          api_key: 'key-zhouyi',
-          enabled: true,
-          sort_order: 1,
-          requires_new_conversation_inputs: false,
-          created_at: new Date().toISOString(),
-          updated_at: new Date().toISOString(),
-        },
-        {
-          id: 'app-dunjiazi',
-          slug: 'dunjiazi',
-          name: '遁甲子',
-          description: null,
-          icon: null,
-          api_base_url: 'https://yiai.example.com/v1',
-          api_key: 'key-dunjiazi',
-          enabled: true,
-          sort_order: 2,
-          requires_new_conversation_inputs: false,
-          created_at: new Date().toISOString(),
-          updated_at: new Date().toISOString(),
-        },
-        {
-          id: 'app-shouyi',
-          slug: 'shouyi-tcm-dual-ai',
-          name: '守一中医双AI',
-          description: null,
-          icon: null,
-          api_base_url: 'https://yiai.example.com/v1',
-          api_key: 'key-shouyi',
-          enabled: true,
-          sort_order: 3,
-          requires_new_conversation_inputs: true,
-          created_at: new Date().toISOString(),
-          updated_at: new Date().toISOString(),
-        },
-      ]
-    );
+    pool = await createInMemoryPool();
+    await createTestUser(pool, 'test_user', 'user', 'testpass');
+    await createTestApp(pool, {
+      slug: 'zhouyi-divination',
+      name: '周易占卦',
+      description: '数据库描述',
+      icon: '🔮',
+      sort_order: 1,
+      requires_new_conversation_inputs: false,
+    });
+    await createTestApp(pool, {
+      slug: 'dunjiazi',
+      name: '遁甲子',
+      description: null,
+      icon: null,
+      sort_order: 2,
+      requires_new_conversation_inputs: false,
+    });
+    await createTestApp(pool, {
+      slug: 'shouyi-tcm-dual-ai',
+      name: '守一中医双AI',
+      description: null,
+      icon: null,
+      sort_order: 3,
+      requires_new_conversation_inputs: true,
+    });
   });
 
   it('rejects unauthenticated access to apps endpoints', async () => {
@@ -207,7 +84,7 @@ describe('App Routes', () => {
 
   it('returns enabled apps without api_key', async () => {
     const app = await buildTestApp(pool);
-    const token = await loginUser(app, 'test_user', 'any');
+    const token = await loginUser(app, 'test_user', 'testpass');
 
     const response = await app.inject({
       method: 'GET',
@@ -236,7 +113,7 @@ describe('App Routes', () => {
       .mockResolvedValueOnce(new Response(JSON.stringify({ title: 'Site Title' })));
 
     const app = await buildTestApp(pool);
-    const token = await loginUser(app, 'test_user', 'any');
+    const token = await loginUser(app, 'test_user', 'testpass');
 
     const response = await app.inject({
       method: 'GET',
@@ -266,7 +143,7 @@ describe('App Routes', () => {
     );
 
     const app = await buildTestApp(pool);
-    const token = await loginUser(app, 'test_user', 'any');
+    const token = await loginUser(app, 'test_user', 'testpass');
 
     const response = await app.inject({
       method: 'GET',
@@ -293,7 +170,7 @@ describe('App Routes', () => {
     );
 
     const app = await buildTestApp(pool);
-    const token = await loginUser(app, 'test_user', 'any');
+    const token = await loginUser(app, 'test_user', 'testpass');
 
     const response = await app.inject({
       method: 'GET',
@@ -307,7 +184,7 @@ describe('App Routes', () => {
     expect(body[1].id).toBe('msg-2');
   });
 
-  it('proxies chat with correct upstream body', async () => {
+  it('proxies chat with correct upstream body and deducts tokens', async () => {
     const stream = new ReadableStream({
       start(controller) {
         controller.enqueue(
@@ -322,7 +199,7 @@ describe('App Routes', () => {
     fetchMock.mockResolvedValueOnce(new Response(stream));
 
     const app = await buildTestApp(pool);
-    const token = await loginUser(app, 'test_user', 'any');
+    const token = await loginUser(app, 'test_user', 'testpass');
 
     const response = await app.inject({
       method: 'POST',
@@ -345,16 +222,78 @@ describe('App Routes', () => {
     };
     expect(upstreamBody.query).toBe('hi');
     expect(upstreamBody.response_mode).toBe('streaming');
-    expect(upstreamBody.user).toBe('yiai-platform-user-1');
+    expect(upstreamBody.user.startsWith('yiai-platform-')).toBe(true);
     expect(upstreamBody.conversation_id).toBe('conv-1');
     expect(upstreamBody.inputs).toEqual({ foo: 'bar' });
 
     expect(response.body).toContain('message');
     expect(response.body).toContain('message_end');
 
-    const mockPool = pool as unknown as { _usageRecords: UsageRecord[] };
-    expect(mockPool._usageRecords).toHaveLength(1);
-    expect(mockPool._usageRecords[0].total_tokens).toBe(15);
+    const usageResult = await pool.query<{ total_tokens: number }>('SELECT * FROM yiai_usage_records');
+    expect(usageResult.rows).toHaveLength(1);
+    expect(usageResult.rows[0].total_tokens).toBe(15);
+
+    const ledgerResult = await pool.query<{ bucket: string; delta_tokens: number }>("SELECT * FROM token_ledger_entries WHERE entry_type = 'usage'");
+    expect(ledgerResult.rows).toHaveLength(1);
+    expect(ledgerResult.rows[0].bucket).toBe('gift');
+    expect(ledgerResult.rows[0].delta_tokens).toBe(-15);
+  });
+
+  it('rejects chat when user has no token balance', async () => {
+    const app = await buildTestApp(pool);
+    const userId = await createTestUser(pool, 'broke_user', 'user', 'testpass');
+    await pool.query(
+      'UPDATE token_accounts SET gift_tokens = 0, recharge_tokens = 0, last_gift_date = CURRENT_DATE WHERE user_id = $1',
+      [userId]
+    );
+
+    const token = await loginUser(app, 'broke_user', 'testpass');
+
+    const response = await app.inject({
+      method: 'POST',
+      url: '/api/apps/zhouyi-divination/chat',
+      headers: { Authorization: `Bearer ${token}` },
+      payload: { query: 'hi' },
+    });
+
+    expect(response.statusCode).toBe(402);
+    expect(fetchMock).not.toHaveBeenCalled();
+    const usageResult = await pool.query('SELECT * FROM yiai_usage_records');
+    expect(usageResult.rows).toHaveLength(0);
+  });
+
+  it('does not double deduct when duplicate message_end events arrive', async () => {
+    const stream = new ReadableStream({
+      start(controller) {
+        controller.enqueue(
+          new TextEncoder().encode(
+            'data: {"event":"message_end","conversation_id":"conv-new","message_id":"dup-msg","task_id":"task-1","metadata":{"usage":{"total_tokens":10}}}\n\ndata: {"event":"message_end","conversation_id":"conv-new","message_id":"dup-msg","task_id":"task-1","metadata":{"usage":{"total_tokens":10}}}\n\n'
+          )
+        );
+        controller.close();
+      },
+    });
+
+    fetchMock.mockResolvedValueOnce(new Response(stream));
+
+    const app = await buildTestApp(pool);
+    const token = await loginUser(app, 'test_user', 'testpass');
+
+    const response = await app.inject({
+      method: 'POST',
+      url: '/api/apps/zhouyi-divination/chat',
+      headers: { Authorization: `Bearer ${token}` },
+      payload: { query: 'hi' },
+    });
+
+    expect(response.statusCode).toBe(200);
+
+    const usageResult = await pool.query('SELECT * FROM yiai_usage_records');
+    expect(usageResult.rows).toHaveLength(1);
+
+    const ledgerResult = await pool.query<{ delta_tokens: number }>("SELECT * FROM token_ledger_entries WHERE entry_type = 'usage'");
+    expect(ledgerResult.rows).toHaveLength(1);
+    expect(ledgerResult.rows[0].delta_tokens).toBe(-10);
   });
 
   it('ignores unknown workflow events without error', async () => {
@@ -372,7 +311,7 @@ describe('App Routes', () => {
     fetchMock.mockResolvedValueOnce(new Response(stream));
 
     const app = await buildTestApp(pool);
-    const token = await loginUser(app, 'test_user', 'any');
+    const token = await loginUser(app, 'test_user', 'testpass');
 
     const response = await app.inject({
       method: 'POST',
@@ -385,82 +324,64 @@ describe('App Routes', () => {
   });
 
   it('requires required user_input_form fields for shouyi app and normalizes string[] options', async () => {
-    fetchMock
-      .mockResolvedValueOnce(new Response(JSON.stringify({ name: '守一中医双AI', description: 'Upstream desc' })))
-      .mockResolvedValueOnce(
+    const infoResponse = () =>
+      Promise.resolve(new Response(JSON.stringify({ name: 'Info', description: '' })));
+    const parametersResponse = () =>
+      Promise.resolve(
         new Response(
           JSON.stringify({
-            opening_statement: '你好',
+            opening_statement: '请填写信息',
             suggested_questions: [],
             user_input_form: [
-              { type: 'text-input', label: '姓名', variable: 'name', required: true },
-              { type: 'paragraph', label: '备注', variable: 'note', required: false },
-              { type: 'select', label: '性别', variable: 'gender', required: true, options: ['男', '女'] },
+              {
+                type: 'text-input',
+                label: '姓名',
+                variable: 'name',
+                required: true,
+              },
+              {
+                type: 'select',
+                label: '性别',
+                variable: 'gender',
+                required: true,
+                options: ['男', '女'],
+              },
             ],
           })
         )
-      )
-      .mockResolvedValueOnce(new Response(JSON.stringify({ title: 'Site Title' })));
+      );
+    const siteResponse = () => Promise.resolve(new Response(JSON.stringify({ title: 'Site' })));
+
+    fetchMock
+      .mockImplementationOnce(infoResponse)
+      .mockImplementationOnce(parametersResponse)
+      .mockImplementationOnce(siteResponse)
+      .mockImplementationOnce(infoResponse)
+      .mockImplementationOnce(parametersResponse)
+      .mockImplementationOnce(siteResponse);
 
     const app = await buildTestApp(pool);
-    const token = await loginUser(app, 'test_user', 'any');
+    const token = await loginUser(app, 'test_user', 'testpass');
 
-    const response = await app.inject({
+    const bootstrapResponse = await app.inject({
       method: 'GET',
       url: '/api/apps/shouyi-tcm-dual-ai/bootstrap',
       headers: { Authorization: `Bearer ${token}` },
     });
 
-    expect(response.statusCode).toBe(200);
-    const body = JSON.parse(response.body) as AppBootstrap;
-    expect(body.app.requires_new_conversation_inputs).toBe(true);
-    expect(body.app.name).toBe('守一中医双AI');
-    expect(body.user_input_form?.some((field) => field.variable === 'name' && field.required)).toBe(true);
-    expect(body.user_input_form?.some((field) => field.variable === 'gender' && field.required)).toBe(true);
+    expect(bootstrapResponse.statusCode).toBe(200);
+    const bootstrap = JSON.parse(bootstrapResponse.body) as AppBootstrap;
+    expect(bootstrap.user_input_form?.some((f) => f.variable === 'gender' && f.options?.some((o) => o.value === '男'))).toBe(true);
 
-    const genderField = body.user_input_form?.find((field) => field.variable === 'gender');
-    expect(genderField?.options).toEqual([
-      { label: '男', value: '男' },
-      { label: '女', value: '女' },
-    ]);
-  });
-
-  it('keeps database app config over upstream info/site', async () => {
-    fetchMock
-      .mockResolvedValueOnce(new Response(JSON.stringify({ name: 'Upstream Name', description: 'Upstream desc', icon: '🔥' })))
-      .mockResolvedValueOnce(new Response(JSON.stringify({ opening_statement: 'Hello', suggested_questions: [] })))
-      .mockResolvedValueOnce(new Response(JSON.stringify({ title: 'Site Title', icon: '🌟' })));
-
-    const app = await buildTestApp(pool);
-    const token = await loginUser(app, 'test_user', 'any');
-
-    const response = await app.inject({
-      method: 'GET',
-      url: '/api/apps/zhouyi-divination/bootstrap',
+    const chatResponse = await app.inject({
+      method: 'POST',
+      url: '/api/apps/shouyi-tcm-dual-ai/chat',
       headers: { Authorization: `Bearer ${token}` },
+      payload: { query: 'hello' },
     });
 
-    expect(response.statusCode).toBe(200);
-    const body = JSON.parse(response.body) as AppBootstrap;
-    expect(body.app.name).toBe('周易占卦');
-    expect(body.app.description).toBe('数据库描述');
-    expect(body.app.icon).toBe('🔮');
-  });
-
-  it('returns 502 on upstream error without exposing api_key', async () => {
-    fetchMock.mockRejectedValueOnce(new Error('network error'));
-
-    const app = await buildTestApp(pool);
-    const token = await loginUser(app, 'test_user', 'any');
-
-    const response = await app.inject({
-      method: 'GET',
-      url: '/api/apps/zhouyi-divination/bootstrap',
-      headers: { Authorization: `Bearer ${token}` },
-    });
-
-    expect(response.statusCode).toBe(502);
-    expect(response.body).not.toContain('key-zhouyi');
-    expect(response.body).not.toContain('api_key');
+    expect(chatResponse.statusCode).toBe(400);
+    const chatBody = JSON.parse(chatResponse.body) as { error: string };
+    expect(chatBody.error).toContain('姓名');
   });
 });

@@ -11,11 +11,32 @@ import {
   recordUsage,
   YiaiAppNotFoundError,
   YiaiUpstreamError,
+  type AppBootstrapResult,
 } from '../services/yiai.js';
+import { deductForUsage, getTokenAccount } from '../services/token-account.js';
 
 interface RouteParams {
   slug: string;
   conversationId: string;
+}
+
+function validateRequiredInputs(bootstrap: AppBootstrapResult, inputs: Record<string, unknown> | undefined): string | null {
+  if (!bootstrap.user_input_form || bootstrap.user_input_form.length === 0) {
+    return null;
+  }
+
+  const missing: string[] = [];
+  for (const field of bootstrap.user_input_form) {
+    if (!field.required) {
+      continue;
+    }
+    const value = inputs?.[field.variable];
+    if (value === undefined || value === null || (typeof value === 'string' && value.trim() === '')) {
+      missing.push(field.label || field.variable);
+    }
+  }
+
+  return missing.length > 0 ? `缺少必填信息：${missing.join('、')}` : null;
 }
 
 export function appRoutes(fastify: FastifyInstance, options: { pool: Pool }): void {
@@ -33,8 +54,9 @@ export function appRoutes(fastify: FastifyInstance, options: { pool: Pool }): vo
   });
 
   fastify.get('/:slug/bootstrap', async (request: FastifyRequest, reply: FastifyReply) => {
-    const { slug } = request.params as RouteParams;
-    const userId = request.user?.userId;
+    const params = request.params as RouteParams;
+    const { slug } = params;
+    const userId = request.user?.id;
     if (!userId) {
       return await reply.status(401).send({ error: 'Unauthorized' });
     }
@@ -54,8 +76,9 @@ export function appRoutes(fastify: FastifyInstance, options: { pool: Pool }): vo
   });
 
   fastify.get('/:slug/conversations', async (request: FastifyRequest, reply: FastifyReply) => {
-    const { slug } = request.params as RouteParams;
-    const userId = request.user?.userId;
+    const params = request.params as RouteParams;
+    const { slug } = params;
+    const userId = request.user?.id;
     if (!userId) {
       return await reply.status(401).send({ error: 'Unauthorized' });
     }
@@ -77,8 +100,9 @@ export function appRoutes(fastify: FastifyInstance, options: { pool: Pool }): vo
   fastify.get(
     '/:slug/conversations/:conversationId/messages',
     async (request: FastifyRequest, reply: FastifyReply) => {
-      const { slug, conversationId } = request.params as RouteParams;
-      const userId = request.user?.userId;
+      const params = request.params as RouteParams;
+      const { slug, conversationId } = params;
+      const userId = request.user?.id;
       if (!userId) {
         return await reply.status(401).send({ error: 'Unauthorized' });
       }
@@ -99,8 +123,9 @@ export function appRoutes(fastify: FastifyInstance, options: { pool: Pool }): vo
   );
 
   fastify.post('/:slug/chat', async (request: FastifyRequest, reply: FastifyReply) => {
-    const { slug } = request.params as RouteParams;
-    const userId = request.user?.userId;
+    const params = request.params as RouteParams;
+    const { slug } = params;
+    const userId = request.user?.id;
     if (!userId) {
       return await reply.status(401).send({ error: 'Unauthorized' });
     }
@@ -111,7 +136,33 @@ export function appRoutes(fastify: FastifyInstance, options: { pool: Pool }): vo
     }
 
     let upstreamResponse: Response;
+    let appRow: { id: string; requires_new_conversation_inputs: boolean } | undefined;
     try {
+      const appResult = await pool.query<{
+        id: string;
+        requires_new_conversation_inputs: boolean;
+      }>('SELECT id, requires_new_conversation_inputs FROM yiai_apps WHERE slug = $1 AND enabled = true', [slug]);
+      appRow = appResult.rows.at(0);
+      if (!appRow) {
+        return await reply.status(404).send({ error: `App not found: ${slug}` });
+      }
+
+      if (appRow.requires_new_conversation_inputs && !body.conversation_id) {
+        const bootstrap = await bootstrapApp(pool, slug);
+        const validationError = validateRequiredInputs(bootstrap, body.inputs);
+        if (validationError) {
+          return await reply.status(400).send({ error: validationError });
+        }
+      }
+
+      const account = await getTokenAccount(pool, userId);
+      const totalAvailable = account.gift_tokens + account.recharge_tokens;
+      if (totalAvailable <= 0) {
+        return await reply.status(402).send({
+          error: 'Token 余额不足，请联系管理员充值或等待每日赠送额度恢复',
+        });
+      }
+
       upstreamResponse = await chatUpstream(pool, slug, userId, {
         query: body.query.trim(),
         conversation_id: body.conversation_id,
@@ -135,8 +186,7 @@ export function appRoutes(fastify: FastifyInstance, options: { pool: Pool }): vo
       return await reply.status(502).send({ error: 'Upstream response has no body' });
     }
 
-    const appResult = await pool.query<{ id: string }>('SELECT id FROM yiai_apps WHERE slug = $1', [slug]);
-    const appId = appResult.rows.at(0)?.id;
+    const appId = appRow.id;
 
     reply.raw.writeHead(200, {
       'Content-Type': 'text/event-stream',
@@ -168,7 +218,7 @@ export function appRoutes(fastify: FastifyInstance, options: { pool: Pool }): vo
         }
         reply.raw.write(`${trimmed}\n`);
 
-        // Parse SSE data line for usage tracking
+        // Parse SSE data line for usage tracking and token deduction
         if (trimmed.startsWith('data:') && appId) {
           const jsonStr = trimmed.slice(5).trim();
           try {
@@ -177,15 +227,32 @@ export function appRoutes(fastify: FastifyInstance, options: { pool: Pool }): vo
               const metadata = eventData.metadata as Record<string, unknown> | undefined;
               const usage = metadata?.usage as Record<string, unknown> | undefined;
               const totalTokens = typeof usage?.total_tokens === 'number' ? usage.total_tokens : undefined;
-              if (totalTokens !== undefined && totalTokens >= 0) {
-                await recordUsage(pool, {
-                  userId,
-                  appId,
-                  conversationId: typeof eventData.conversation_id === 'string' ? eventData.conversation_id : undefined,
-                  messageId: typeof eventData.message_id === 'string' ? eventData.message_id : undefined,
-                  taskId: typeof eventData.task_id === 'string' ? eventData.task_id : undefined,
-                  totalTokens,
-                });
+              const messageId = typeof eventData.message_id === 'string' ? eventData.message_id : undefined;
+              if (totalTokens !== undefined && totalTokens >= 0 && messageId) {
+                const client = await pool.connect();
+                try {
+                  await client.query('BEGIN');
+                  const usageRecordId = await recordUsage(client, {
+                    userId,
+                    appId,
+                    conversationId: typeof eventData.conversation_id === 'string' ? eventData.conversation_id : undefined,
+                    messageId,
+                    taskId: typeof eventData.task_id === 'string' ? eventData.task_id : undefined,
+                    totalTokens,
+                  });
+                  await deductForUsage(client, userId, totalTokens, usageRecordId);
+                  await client.query('COMMIT');
+                } catch (error) {
+                  await client.query('ROLLBACK');
+                  // Unique violation on message_id means duplicate upstream event; ignore idempotently
+                  if (error && typeof error === 'object' && 'code' in error && error.code === '23505') {
+                    request.log.warn({ messageId }, 'Duplicate message_end usage record ignored');
+                  } else {
+                    request.log.error(error);
+                  }
+                } finally {
+                  client.release();
+                }
               }
             }
           } catch {

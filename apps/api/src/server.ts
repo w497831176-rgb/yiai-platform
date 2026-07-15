@@ -5,6 +5,8 @@ import { pool, checkDatabaseConnection } from './db.js';
 import { healthRoutes } from './routes/health.js';
 import { authRoutes } from './routes/auth.js';
 import { appRoutes } from './routes/apps.js';
+import { tokenAccountRoutes } from './routes/token-account.js';
+import { adminRoutes } from './routes/admin.js';
 
 export async function buildApp(): Promise<FastifyInstance> {
   const app = Fastify({
@@ -18,6 +20,8 @@ export async function buildApp(): Promise<FastifyInstance> {
   app.register(healthRoutes, { dependencies: { checkDatabaseConnection } });
   app.register(authRoutes, { prefix: '/api/auth', pool });
   app.register(appRoutes, { prefix: '/api/apps', pool });
+  app.register(tokenAccountRoutes, { prefix: '/api', pool });
+  app.register(adminRoutes, { prefix: '/api', pool });
 
   return app;
 }

@@ -453,6 +453,199 @@ button:disabled {
   margin-top: 1rem;
 }
 
+.token-badge {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.375rem 0.75rem;
+  background: #f0f7ff;
+  border: 1px solid #bbdefb;
+  border-radius: 20px;
+  font-size: 0.8125rem;
+  color: #1565c0;
+  cursor: pointer;
+}
+
+.token-badge.loading {
+  background: #f5f5f5;
+  border-color: #e0e0e0;
+  color: #888;
+  cursor: default;
+}
+
+.token-item {
+  white-space: nowrap;
+}
+
+.token-item.gift {
+  color: #2e7d32;
+}
+
+.token-item.recharge {
+  color: #ef6c00;
+}
+
+.token-item.total {
+  font-weight: 600;
+}
+
+.token-hint {
+  font-size: 0.875rem;
+  color: #666;
+  margin-top: -0.75rem;
+  margin-bottom: 1.25rem;
+}
+
+.user-name {
+  display: none;
+}
+
+@media (min-width: 640px) {
+  .user-name {
+    display: inline;
+  }
+}
+
+.ledger-page,
+.admin-page {
+  min-height: 100vh;
+}
+
+.ledger-header,
+.admin-header {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  padding: 0.75rem 1rem;
+  background: white;
+  border-bottom: 1px solid #e0e0e0;
+}
+
+.ledger-header h1,
+.admin-header h1 {
+  margin: 0;
+  font-size: 1.25rem;
+}
+
+.ledger-main,
+.admin-main {
+  padding: 1rem;
+  max-width: 960px;
+  margin: 0 auto;
+}
+
+.admin-nav {
+  display: flex;
+  gap: 0.5rem;
+  padding: 0.75rem 1rem;
+  background: white;
+  border-bottom: 1px solid #e0e0e0;
+  max-width: 960px;
+  margin: 0 auto;
+}
+
+.admin-nav button {
+  background: transparent;
+  color: #555;
+  border-radius: 0;
+  padding: 0.5rem 0.75rem;
+  border-bottom: 2px solid transparent;
+}
+
+.admin-nav button.active {
+  color: #1976d2;
+  border-bottom-color: #1976d2;
+}
+
+.ledger-table,
+.admin-table {
+  width: 100%;
+  border-collapse: collapse;
+  background: white;
+  border-radius: 12px;
+  overflow: hidden;
+  box-shadow: 0 2px 12px rgba(0, 0, 0, 0.06);
+  font-size: 0.875rem;
+}
+
+.ledger-table th,
+.ledger-table td,
+.admin-table th,
+.admin-table td {
+  padding: 0.75rem;
+  text-align: left;
+  border-bottom: 1px solid #f0f0f0;
+}
+
+.ledger-table th,
+.admin-table th {
+  background: #fafafa;
+  font-weight: 600;
+  color: #555;
+}
+
+.ledger-table .positive {
+  color: #2e7d32;
+}
+
+.ledger-table .negative {
+  color: #c62828;
+}
+
+.admin-table td button {
+  margin-right: 0.5rem;
+}
+
+.success-banner {
+  margin: 0 0 1rem;
+  padding: 0.75rem 1rem;
+  background: #e8f5e9;
+  color: #2e7d32;
+  border-radius: 8px;
+  font-size: 0.875rem;
+}
+
+.modal.wide {
+  max-width: 640px;
+}
+
+label.checkbox {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  cursor: pointer;
+}
+
+label.checkbox input {
+  width: auto;
+  margin: 0;
+}
+
+.empty {
+  color: #888;
+  font-size: 0.875rem;
+}
+
+@media (max-width: 640px) {
+  .user-actions {
+    flex-wrap: wrap;
+  }
+
+  .token-badge {
+    order: 3;
+    width: 100%;
+    justify-content: center;
+    margin-top: 0.25rem;
+  }
+
+  .ledger-table,
+  .admin-table {
+    display: block;
+    overflow-x: auto;
+    white-space: nowrap;
+  }
+}
+
 @media (max-width: 640px) {
   .chat-page {
     grid-template-columns: 1fr;

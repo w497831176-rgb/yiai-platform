@@ -4,7 +4,7 @@ import { verifyToken } from './jwt.js';
 declare module 'fastify' {
   interface FastifyRequest {
     user?: {
-      userId: string;
+      id: string;
       username: string;
       role: 'user' | 'admin';
     };
