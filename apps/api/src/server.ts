@@ -14,7 +14,7 @@ export async function buildApp(): Promise<FastifyInstance> {
     return { status: 'ok', service: 'yiai-platform-api' };
   });
 
-  app.register(healthRoutes, { prefix: '/api/health', dependencies: { checkDatabaseConnection } });
+  app.register(healthRoutes, { dependencies: { checkDatabaseConnection } });
   app.register(authRoutes, { prefix: '/api/auth', pool });
 
   return app;
