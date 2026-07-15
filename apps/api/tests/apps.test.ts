@@ -147,8 +147,8 @@ describe('App Routes', () => {
           id: 'app-zhouyi',
           slug: 'zhouyi-divination',
           name: '周易占卦',
-          description: null,
-          icon: null,
+          description: '数据库描述',
+          icon: '🔮',
           api_base_url: 'https://yiai.example.com/v1',
           api_key: 'key-zhouyi',
           enabled: true,
@@ -229,10 +229,11 @@ describe('App Routes', () => {
 
   it('returns bootstrap without api_key', async () => {
     fetchMock
-      .mockResolvedValueOnce(new Response(JSON.stringify({ opening_statement: '你好', suggested_questions: ['q1'] })))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ name: 'Upstream Name', description: 'Upstream desc' })))
       .mockResolvedValueOnce(
-        new Response(JSON.stringify({ user_input_form: [{ type: 'text-input', label: 'Name', variable: 'name', required: true }] }))
-      );
+        new Response(JSON.stringify({ opening_statement: '欢迎使用', suggested_questions: ['q1'], user_input_form: [{ type: 'text-input', label: 'Name', variable: 'name', required: true }] }))
+      )
+      .mockResolvedValueOnce(new Response(JSON.stringify({ title: 'Site Title' })));
 
     const app = await buildTestApp(pool);
     const token = await loginUser(app, 'test_user', 'any');
@@ -246,6 +247,8 @@ describe('App Routes', () => {
     expect(response.statusCode).toBe(200);
     const body = JSON.parse(response.body) as AppBootstrap;
     expect(body.app.requires_new_conversation_inputs).toBe(true);
+    expect(body.opening_statement).toBe('欢迎使用');
+    expect(body.suggested_questions).toEqual(['q1']);
     expect(body).not.toHaveProperty('api_key');
     expect(body.app).not.toHaveProperty('api_key');
   });
@@ -381,20 +384,23 @@ describe('App Routes', () => {
     expect(response.statusCode).toBe(200);
   });
 
-  it('requires required user_input_form fields for shouyi app', async () => {
+  it('requires required user_input_form fields for shouyi app and normalizes string[] options', async () => {
     fetchMock
-      .mockResolvedValueOnce(new Response(JSON.stringify({ opening_statement: '你好', suggested_questions: [] })))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ name: '守一中医双AI', description: 'Upstream desc' })))
       .mockResolvedValueOnce(
         new Response(
           JSON.stringify({
+            opening_statement: '你好',
+            suggested_questions: [],
             user_input_form: [
               { type: 'text-input', label: '姓名', variable: 'name', required: true },
               { type: 'paragraph', label: '备注', variable: 'note', required: false },
-              { type: 'select', label: '性别', variable: 'gender', required: true, options: [{ label: '男', value: 'male' }] },
+              { type: 'select', label: '性别', variable: 'gender', required: true, options: ['男', '女'] },
             ],
           })
         )
-      );
+      )
+      .mockResolvedValueOnce(new Response(JSON.stringify({ title: 'Site Title' })));
 
     const app = await buildTestApp(pool);
     const token = await loginUser(app, 'test_user', 'any');
@@ -408,7 +414,53 @@ describe('App Routes', () => {
     expect(response.statusCode).toBe(200);
     const body = JSON.parse(response.body) as AppBootstrap;
     expect(body.app.requires_new_conversation_inputs).toBe(true);
+    expect(body.app.name).toBe('守一中医双AI');
     expect(body.user_input_form?.some((field) => field.variable === 'name' && field.required)).toBe(true);
     expect(body.user_input_form?.some((field) => field.variable === 'gender' && field.required)).toBe(true);
+
+    const genderField = body.user_input_form?.find((field) => field.variable === 'gender');
+    expect(genderField?.options).toEqual([
+      { label: '男', value: '男' },
+      { label: '女', value: '女' },
+    ]);
+  });
+
+  it('keeps database app config over upstream info/site', async () => {
+    fetchMock
+      .mockResolvedValueOnce(new Response(JSON.stringify({ name: 'Upstream Name', description: 'Upstream desc', icon: '🔥' })))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ opening_statement: 'Hello', suggested_questions: [] })))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ title: 'Site Title', icon: '🌟' })));
+
+    const app = await buildTestApp(pool);
+    const token = await loginUser(app, 'test_user', 'any');
+
+    const response = await app.inject({
+      method: 'GET',
+      url: '/api/apps/zhouyi-divination/bootstrap',
+      headers: { Authorization: `Bearer ${token}` },
+    });
+
+    expect(response.statusCode).toBe(200);
+    const body = JSON.parse(response.body) as AppBootstrap;
+    expect(body.app.name).toBe('周易占卦');
+    expect(body.app.description).toBe('数据库描述');
+    expect(body.app.icon).toBe('🔮');
+  });
+
+  it('returns 502 on upstream error without exposing api_key', async () => {
+    fetchMock.mockRejectedValueOnce(new Error('network error'));
+
+    const app = await buildTestApp(pool);
+    const token = await loginUser(app, 'test_user', 'any');
+
+    const response = await app.inject({
+      method: 'GET',
+      url: '/api/apps/zhouyi-divination/bootstrap',
+      headers: { Authorization: `Bearer ${token}` },
+    });
+
+    expect(response.statusCode).toBe(502);
+    expect(response.body).not.toContain('key-zhouyi');
+    expect(response.body).not.toContain('api_key');
   });
 });

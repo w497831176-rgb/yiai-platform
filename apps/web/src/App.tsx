@@ -1,5 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import './App.css';
+import { readSSEStream } from './sse';
+import { startChatStream, type ChatRequestBody } from './chat';
 
 interface User {
   id: string;
@@ -483,7 +485,7 @@ function InputFormModal({
   );
 }
 
-function ChatPage({
+export function ChatPage({
   slug,
   user: _user,
   onBack,
@@ -503,8 +505,10 @@ function ChatPage({
   const [error, setError] = useState('');
   const [showInputForm, setShowInputForm] = useState(false);
   const [pendingInputs, setPendingInputs] = useState<Record<string, unknown> | undefined>(undefined);
+  const [inputFormLoadError, setInputFormLoadError] = useState('');
   const [usage, setUsage] = useState<number | undefined>(undefined);
   const messagesEndRef = useRef<HTMLDivElement>(null);
+  const abortControllerRef = useRef<AbortController | null>(null);
 
   const scrollToBottom = () => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
@@ -558,12 +562,23 @@ function ChatPage({
       if (list.length > 0) {
         const latest = list[0];
         setActiveConversationId(latest.id);
+        setPendingInputs(latest.inputs);
+        setInputFormLoadError('');
         await loadMessages(latest.id);
       } else if (bs.app.requires_new_conversation_inputs) {
-        setShowInputForm(true);
+        const formFields = bs.user_input_form ?? [];
+        if (formFields.length === 0) {
+          setInputFormLoadError('用户信息表单加载失败，请重试');
+          setShowInputForm(false);
+        } else {
+          setInputFormLoadError('');
+          setShowInputForm(true);
+        }
       } else {
         setMessages([]);
         setActiveConversationId(undefined);
+        setPendingInputs({});
+        setInputFormLoadError('');
       }
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to load app');
@@ -580,10 +595,17 @@ function ChatPage({
     setActiveConversationId(undefined);
     setMessages([]);
     setUsage(undefined);
-    setPendingInputs(undefined);
+    setPendingInputs({});
+    setInputFormLoadError('');
 
     if (bootstrap?.app.requires_new_conversation_inputs) {
-      setShowInputForm(true);
+      const formFields = bootstrap.user_input_form ?? [];
+      if (formFields.length === 0) {
+        setInputFormLoadError('用户信息表单加载失败，请重试');
+        setShowInputForm(false);
+      } else {
+        setShowInputForm(true);
+      }
     }
   };
 
@@ -597,9 +619,10 @@ function ChatPage({
     onBack();
   };
 
-  const handleSend = (query: string) => {
-    if (!query.trim() || loading) return;
-
+  const handleSend = async (query: string) => {
+    if (!query.trim() || loading) {
+      return;
+    }
     setLoading(true);
     setError('');
     setUsage(undefined);
@@ -609,7 +632,7 @@ function ChatPage({
     setMessages((prev) => [...prev, userMessage, assistantMessage]);
 
     const token = localStorage.getItem(TOKEN_KEY);
-    const body: Record<string, unknown> = {
+    const body: ChatRequestBody = {
       query: query.trim(),
       inputs: pendingInputs ?? {},
     };
@@ -617,70 +640,74 @@ function ChatPage({
       body.conversation_id = activeConversationId;
     }
 
-    const eventSource = new EventSource(`/api/apps/${slug}/chat`, {
-      fetch: (input: RequestInfo | URL, init: RequestInit | undefined) =>
-        fetch(input, {
-          ...init,
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            Authorization: token ? `Bearer ${token}` : '',
-          },
-          body: JSON.stringify(body),
-        }),
-    } as EventSourceInit);
+    abortControllerRef.current?.abort();
+    abortControllerRef.current = new AbortController();
 
-    eventSource.onmessage = (event: MessageEvent<string>) => {
-      try {
-        const data = JSON.parse(event.data) as { event: string; answer?: string; url?: string; type?: string; conversation_id?: string; message_id?: string; metadata?: { usage?: { total_tokens?: number } } };
-
-        if (data.event === 'message') {
-          setMessages((prev) => {
-            const next = [...prev];
-            const last = next[next.length - 1];
-            if (last.role === 'assistant') {
-              last.content += data.answer ?? '';
-            }
-            return next;
-          });
-        } else if (data.event === 'message_file') {
-          setMessages((prev) => {
-            const next = [...prev];
-            const last = next[next.length - 1];
-            if (last.role === 'assistant' && data.url) {
-              last.files = [...(last.files ?? []), { type: data.type ?? 'image', url: data.url }];
-            }
-            return next;
-          });
-        } else if (data.event === 'message_end') {
-          if (data.conversation_id && !activeConversationId) {
-            setActiveConversationId(data.conversation_id);
-            void loadConversations();
-          }
-          const totalTokens = data.metadata?.usage?.total_tokens;
-          if (typeof totalTokens === 'number') {
-            setUsage(totalTokens);
-          }
-          eventSource.close();
-          setLoading(false);
-        } else if (data.event === 'error') {
-          setError('Chat error');
-          eventSource.close();
-          setLoading(false);
-        }
-      } catch {
-        // Ignore malformed events
+    try {
+      const response = await startChatStream(slug, token, body, abortControllerRef.current.signal);
+      const reader = response.body?.getReader();
+      if (!reader) {
+        throw new Error('响应不支持流式读取');
       }
-    };
 
-    eventSource.onerror = () => {
-      eventSource.close();
+      await readSSEStream(
+        reader,
+        {
+          onMessage: (data) => {
+            const answer = typeof data.answer === 'string' ? data.answer : '';
+            setMessages((prev) => {
+              const next = [...prev];
+              const last = next[next.length - 1];
+              if (last.role === 'assistant') {
+                next[next.length - 1] = { ...last, content: last.content + answer };
+              }
+              return next;
+            });
+          },
+          onMessageFile: (data) => {
+            const url = typeof data.url === 'string' ? data.url : '';
+            const type = typeof data.type === 'string' ? data.type : 'image';
+            if (!url) {
+              return;
+            }
+            setMessages((prev) => {
+              const next = [...prev];
+              const last = next[next.length - 1];
+              if (last.role === 'assistant') {
+                next[next.length - 1] = { ...last, files: [...(last.files ?? []), { type, url }] };
+              }
+              return next;
+            });
+          },
+          onMessageEnd: (data) => {
+            if (typeof data.conversation_id === 'string' && !activeConversationId) {
+              setActiveConversationId(data.conversation_id);
+              void loadConversations();
+            }
+            const totalTokens = ((data.metadata as Record<string, unknown> | undefined)?.usage as Record<string, unknown> | undefined)?.total_tokens;
+            if (typeof totalTokens === 'number') {
+              setUsage(totalTokens);
+            }
+          },
+          onError: (data) => {
+            const message = typeof data.message === 'string' ? data.message : '聊天服务返回错误';
+            setError(message);
+            setLoading(false);
+          },
+          onComplete: () => {
+            setLoading(false);
+          },
+        },
+        abortControllerRef.current.signal
+      );
+    } catch (err) {
+      setError(err instanceof Error ? err.message : '发送失败');
       setLoading(false);
-    };
+    }
   };
 
   const handleSuggestedQuestion = (question: string) => {
-    handleSend(question);
+    void handleSend(question);
   };
 
   return (
@@ -723,7 +750,9 @@ function ChatPage({
       </aside>
 
       <main className="chat-main">
-        {error && <p className="error-banner">{error}</p>}
+        {(error || inputFormLoadError) && (
+          <p className="error-banner">{error || inputFormLoadError}</p>
+        )}
 
         {messages.length === 0 && bootstrap?.opening_statement && (
           <div className="opening">
@@ -768,7 +797,7 @@ function ChatPage({
           className="input-bar"
           onSubmit={(e) => {
             e.preventDefault();
-            handleSend(input);
+            void handleSend(input);
             setInput('');
           }}
         >
@@ -779,9 +808,9 @@ function ChatPage({
               setInput(e.target.value);
             }}
             placeholder="输入问题..."
-            disabled={loading}
+            disabled={loading || !!inputFormLoadError}
           />
-          <button type="submit" disabled={loading || !input.trim()}>
+          <button type="submit" disabled={loading || !!inputFormLoadError || !input.trim()}>
             {loading ? '发送中...' : '发送'}
           </button>
         </form>

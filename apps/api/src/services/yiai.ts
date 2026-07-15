@@ -24,12 +24,41 @@ interface YiaiInfoResponse {
   name?: string;
   description?: string;
   icon?: string;
-  opening_statement?: string;
-  suggested_questions?: string[];
+}
+
+interface YiaiSiteResponse {
+  title?: string;
+  icon?: string;
+  description?: string;
 }
 
 interface YiaiParametersResponse {
+  opening_statement?: string;
+  suggested_questions?: string[];
   user_input_form?: unknown;
+}
+
+function normalizeOptions(options: unknown): UserInputFormField['options'] {
+  if (!Array.isArray(options)) {
+    return undefined;
+  }
+
+  const normalized: NonNullable<UserInputFormField['options']> = [];
+
+  for (const option of options) {
+    if (typeof option === 'string') {
+      normalized.push({ label: option, value: option });
+    } else if (option && typeof option === 'object') {
+      const raw = option as Record<string, unknown>;
+      const label = typeof raw.label === 'string' ? raw.label : undefined;
+      const value = typeof raw.value === 'string' ? raw.value : undefined;
+      if (label !== undefined && value !== undefined) {
+        normalized.push({ label, value });
+      }
+    }
+  }
+
+  return normalized.length > 0 ? normalized : undefined;
 }
 
 function normalizeUserInputForm(raw: unknown): UserInputFormField[] | null {
@@ -42,7 +71,11 @@ function normalizeUserInputForm(raw: unknown): UserInputFormField[] | null {
   for (const item of raw) {
     if (item && typeof item === 'object') {
       if ('type' in item && typeof (item as Record<string, unknown>).type === 'string') {
-        normalized.push(item as UserInputFormField);
+        const field = item as UserInputFormField;
+        normalized.push({
+          ...field,
+          options: normalizeOptions(field.options),
+        });
         continue;
       }
 
@@ -58,7 +91,7 @@ function normalizeUserInputForm(raw: unknown): UserInputFormField[] | null {
             variable: typeof cfg.variable === 'string' ? cfg.variable : '',
             required: cfg.required === true,
             default: typeof cfg.default === 'string' ? cfg.default : undefined,
-            options: Array.isArray(cfg.options) ? (cfg.options as UserInputFormField['options']) : undefined,
+            options: normalizeOptions(cfg.options),
           });
         }
       }
@@ -102,13 +135,18 @@ export async function listEnabledApps(pool: Pool): Promise<YiaiApp[]> {
 }
 
 async function yiaiGet<T>(url: string, apiKey: string): Promise<T> {
-  const response = await fetch(url, {
-    method: 'GET',
-    headers: {
-      Authorization: `Bearer ${apiKey}`,
-      'Content-Type': 'application/json',
-    },
-  });
+  let response: Response;
+  try {
+    response = await fetch(url, {
+      method: 'GET',
+      headers: {
+        Authorization: `Bearer ${apiKey}`,
+        'Content-Type': 'application/json',
+      },
+    });
+  } catch (err) {
+    throw new YiaiUpstreamError(`YIAI API request failed: ${err instanceof Error ? err.message : 'unknown error'}`);
+  }
 
   if (!response.ok) {
     throw new YiaiUpstreamError(`YIAI API error: ${String(response.status)} ${response.statusText}`);
@@ -132,25 +170,31 @@ export async function bootstrapApp(pool: Pool, slug: string): Promise<AppBootstr
 
   const baseUrl = app.api_base_url.replace(/\/$/, '');
 
-  const [info, parameters] = await Promise.all([
+  const [info, parameters, site] = await Promise.all([
     yiaiGet<YiaiInfoResponse>(`${baseUrl}/info`, app.api_key),
     yiaiGet<YiaiParametersResponse>(`${baseUrl}/parameters`, app.api_key),
+    yiaiGet<YiaiSiteResponse>(`${baseUrl}/site`, app.api_key),
   ]);
+
+  // 数据库配置始终优先；仅当数据库字段为空时才使用上游可选信息作为回退。
+  const fallbackName = info.name || site.title;
+  const fallbackDescription = info.description || site.description;
+  const fallbackIcon = info.icon || site.icon;
 
   return {
     app: {
       id: app.id,
       slug: app.slug,
-      name: app.name,
-      description: app.description,
-      icon: app.icon,
+      name: app.name || fallbackName || slug,
+      description: app.description ?? fallbackDescription ?? null,
+      icon: app.icon ?? fallbackIcon ?? null,
       sort_order: app.sort_order,
       requires_new_conversation_inputs: app.requires_new_conversation_inputs,
       created_at: app.created_at,
       updated_at: app.updated_at,
     },
-    opening_statement: info.opening_statement ?? null,
-    suggested_questions: info.suggested_questions ?? null,
+    opening_statement: parameters.opening_statement ?? null,
+    suggested_questions: parameters.suggested_questions ?? null,
     user_input_form: normalizeUserInputForm(parameters.user_input_form),
   };
 }
