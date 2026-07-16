@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import './App.css';
 import { readSSEStream } from './sse';
 import { startChatStream, type ChatRequestBody } from './chat';
+import { stripThinkContent } from './utils/message';
 
 interface User {
   id: string;
@@ -66,14 +67,21 @@ interface YiaiMessage {
   answer: string;
   message_files?: YiaiMessageFile[] | null;
   created_at: number;
+  metadata?: {
+    usage?: {
+      total_tokens?: number;
+    };
+  };
 }
 
 interface ChatMessage {
   id?: string;
   role: 'user' | 'assistant';
   content: string;
+  rawContent?: string;
   files?: YiaiMessageFile[];
   usage?: number;
+  createdAt?: number;
 }
 
 interface TokenAccount {
@@ -128,6 +136,31 @@ type View =
 
 const TOKEN_KEY = 'yiai_token';
 
+function formatShanghaiTime(timestamp: number): string {
+  return new Intl.DateTimeFormat('en-CA', {
+    timeZone: 'Asia/Shanghai',
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+    hour12: false,
+  })
+    .format(new Date(timestamp))
+    .replace(', ', ' ');
+}
+
+function formatMessageMeta(msg: ChatMessage): string {
+  const parts: string[] = [];
+  if (msg.usage !== undefined) {
+    parts.push(`本次消耗：${msg.usage.toLocaleString()} Tokens`);
+  }
+  if (msg.createdAt !== undefined) {
+    parts.push(formatShanghaiTime(msg.createdAt));
+  }
+  return parts.join(' · ');
+}
+
 async function api<T>(path: string, options: RequestInit = {}): Promise<T> {
   const token = localStorage.getItem(TOKEN_KEY);
   const baseHeaders: Record<string, string> = {
@@ -152,7 +185,7 @@ async function api<T>(path: string, options: RequestInit = {}): Promise<T> {
 
   const data = (await response.json()) as T & { error?: string };
   if (!response.ok) {
-    throw new Error(data.error ?? 'Request failed');
+    throw new Error(data.error ?? '请求失败');
   }
   return data;
 }
@@ -175,7 +208,7 @@ function LoginPage({ onLogin, onSwitch }: { onLogin: (res: AuthResponse) => void
         });
         onLogin(res);
       } catch (err) {
-        setError(err instanceof Error ? err.message : 'Login failed');
+        setError(err instanceof Error ? err.message : '登录失败');
       } finally {
         setLoading(false);
       }
@@ -185,10 +218,10 @@ function LoginPage({ onLogin, onSwitch }: { onLogin: (res: AuthResponse) => void
   return (
     <div className="auth-page">
       <form className="auth-form" onSubmit={handleSubmit}>
-        <h2>Login</h2>
+        <h2>登录</h2>
         {error && <p className="error">{error}</p>}
         <label>
-          Username
+          用户名
           <input
             type="text"
             value={username}
@@ -197,10 +230,11 @@ function LoginPage({ onLogin, onSwitch }: { onLogin: (res: AuthResponse) => void
             }}
             minLength={3}
             required
+            autoComplete="username"
           />
         </label>
         <label>
-          Password
+          密码
           <input
             type="password"
             value={password}
@@ -209,15 +243,16 @@ function LoginPage({ onLogin, onSwitch }: { onLogin: (res: AuthResponse) => void
             }}
             minLength={6}
             required
+            autoComplete="current-password"
           />
         </label>
         <button type="submit" disabled={loading}>
-          {loading ? 'Logging in...' : 'Login'}
+          {loading ? '登录中...' : '登录'}
         </button>
         <p>
-          No account?{' '}
+          还没有账号？{' '}
           <button type="button" className="link" onClick={onSwitch}>
-            Register
+            注册
           </button>
         </p>
       </form>
@@ -228,6 +263,7 @@ function LoginPage({ onLogin, onSwitch }: { onLogin: (res: AuthResponse) => void
 function RegisterPage({ onLogin, onSwitch }: { onLogin: (res: AuthResponse) => void; onSwitch: () => void }) {
   const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
+  const [confirmPassword, setConfirmPassword] = useState('');
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
   const [success, setSuccess] = useState('');
@@ -236,6 +272,12 @@ function RegisterPage({ onLogin, onSwitch }: { onLogin: (res: AuthResponse) => v
     e.preventDefault();
     setError('');
     setSuccess('');
+
+    if (password !== confirmPassword) {
+      setError('两次输入的密码不一致');
+      return;
+    }
+
     setLoading(true);
     void (async () => {
       try {
@@ -243,14 +285,14 @@ function RegisterPage({ onLogin, onSwitch }: { onLogin: (res: AuthResponse) => v
           method: 'POST',
           body: JSON.stringify({ username, password }),
         });
-        setSuccess('Registration successful, logging in...');
+        setSuccess('注册成功，正在登录…');
         const res = await api<AuthResponse>('/auth/login', {
           method: 'POST',
           body: JSON.stringify({ username, password }),
         });
         onLogin(res);
       } catch (err) {
-        setError(err instanceof Error ? err.message : 'Registration failed');
+        setError(err instanceof Error ? err.message : '注册失败');
       } finally {
         setLoading(false);
       }
@@ -260,11 +302,11 @@ function RegisterPage({ onLogin, onSwitch }: { onLogin: (res: AuthResponse) => v
   return (
     <div className="auth-page">
       <form className="auth-form" onSubmit={handleSubmit}>
-        <h2>Register</h2>
+        <h2>注册</h2>
         {error && <p className="error">{error}</p>}
         {success && <p className="success">{success}</p>}
         <label>
-          Username
+          用户名
           <input
             type="text"
             value={username}
@@ -273,10 +315,11 @@ function RegisterPage({ onLogin, onSwitch }: { onLogin: (res: AuthResponse) => v
             }}
             minLength={3}
             required
+            autoComplete="username"
           />
         </label>
         <label>
-          Password
+          密码
           <input
             type="password"
             value={password}
@@ -285,15 +328,29 @@ function RegisterPage({ onLogin, onSwitch }: { onLogin: (res: AuthResponse) => v
             }}
             minLength={6}
             required
+            autoComplete="new-password"
+          />
+        </label>
+        <label>
+          确认密码
+          <input
+            type="password"
+            value={confirmPassword}
+            onChange={(e) => {
+              setConfirmPassword(e.target.value);
+            }}
+            minLength={6}
+            required
+            autoComplete="new-password"
           />
         </label>
         <button type="submit" disabled={loading}>
-          {loading ? 'Registering...' : 'Register'}
+          {loading ? '注册中...' : '注册'}
         </button>
         <p>
-          Already have an account?{' '}
+          已有账号？{' '}
           <button type="button" className="link" onClick={onSwitch}>
-            Login
+            登录
           </button>
         </p>
       </form>
@@ -327,17 +384,19 @@ function ProfilePage({
           method: 'POST',
           body: JSON.stringify({ currentPassword, newPassword }),
         });
-        setMessage('Password updated. Please log in again.');
+        setMessage('密码已修改，请重新登录。');
         setTimeout(() => {
           onLogout();
         }, 1500);
       } catch (err) {
-        setError(err instanceof Error ? err.message : 'Failed to change password');
+        setError(err instanceof Error ? err.message : '修改密码失败');
       } finally {
         setLoading(false);
       }
     })();
   };
+
+  const roleLabel = user.role === 'admin' ? '管理员' : '用户';
 
   return (
     <div className="profile-page">
@@ -345,23 +404,23 @@ function ProfilePage({
         <h1>YIAI Platform</h1>
         <div className="user-info">
           <button className="secondary" onClick={onBack}>
-            Back
+            返回
           </button>
           <span>
-            {user.username} ({user.role})
+            {user.username} ({roleLabel})
           </span>
-          <button onClick={onLogout}>Logout</button>
+          <button onClick={onLogout}>退出登录</button>
         </div>
       </header>
 
       <main className="profile-main">
         <section className="change-password">
-          <h3>Change Password</h3>
+          <h3>修改密码</h3>
           {error && <p className="error">{error}</p>}
           {message && <p className="success">{message}</p>}
           <form onSubmit={handleChangePassword}>
             <label>
-              Current Password
+              当前密码
               <input
                 type="password"
                 value={currentPassword}
@@ -370,10 +429,11 @@ function ProfilePage({
                 }}
                 minLength={6}
                 required
+                autoComplete="current-password"
               />
             </label>
             <label>
-              New Password
+              新密码
               <input
                 type="password"
                 value={newPassword}
@@ -382,10 +442,11 @@ function ProfilePage({
                 }}
                 minLength={6}
                 required
+                autoComplete="new-password"
               />
             </label>
             <button type="submit" disabled={loading}>
-              {loading ? 'Updating...' : 'Update Password'}
+              {loading ? '更新中...' : '更新密码'}
             </button>
           </form>
         </section>
@@ -407,6 +468,22 @@ function TokenBadge({ account, onClick }: { account: TokenAccount | null; onClic
   );
 }
 
+function AppIcon({ icon }: { icon: string | null }) {
+  const [failed, setFailed] = useState(false);
+  const isImage =
+    icon && (icon.startsWith('http://') || icon.startsWith('https://') || icon.startsWith('data:'));
+
+  if (isImage && !failed) {
+    return <img className="app-icon-image" src={icon} alt="" onError={() => { setFailed(true); }} />;
+  }
+
+  if (icon) {
+    return <span className="app-icon-text">{icon}</span>;
+  }
+
+  return <span className="app-icon-placeholder" aria-hidden="true" />;
+}
+
 function AppHub({
   user,
   apps,
@@ -426,6 +503,8 @@ function AppHub({
   onLedger: () => void;
   onAdmin: () => void;
 }) {
+  const roleLabel = user.role === 'admin' ? '管理员' : '用户';
+
   return (
     <div className="hub-page">
       <header className="hub-header">
@@ -433,7 +512,7 @@ function AppHub({
         <div className="user-actions">
           <TokenBadge account={account} onClick={onLedger} />
           <span className="user-name">
-            {user.username} ({user.role})
+            {user.username} ({roleLabel})
           </span>
           {user.role === 'admin' && (
             <button className="secondary admin-btn" onClick={onAdmin}>
@@ -441,9 +520,9 @@ function AppHub({
             </button>
           )}
           <button className="secondary" onClick={onProfile}>
-            Profile
+            个人资料
           </button>
-          <button onClick={onLogout}>Logout</button>
+          <button onClick={onLogout}>退出登录</button>
         </div>
       </header>
       <main className="hub-main">
@@ -456,7 +535,9 @@ function AppHub({
         <div className="app-grid">
           {apps.map((app) => (
             <button key={app.id} className="app-card" onClick={() => { onSelectApp(app.slug); }}>
-              <div className="app-icon">{app.icon ?? '🤖'}</div>
+              <div className="app-icon">
+                <AppIcon icon={app.icon} />
+              </div>
               <h3>{app.name}</h3>
               {app.description && <p>{app.description}</p>}
             </button>
@@ -581,7 +662,6 @@ export function ChatPage({
   const [showInputForm, setShowInputForm] = useState(false);
   const [pendingInputs, setPendingInputs] = useState<Record<string, unknown> | undefined>(undefined);
   const [inputFormLoadError, setInputFormLoadError] = useState('');
-  const [usage, setUsage] = useState<number | undefined>(undefined);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const abortControllerRef = useRef<AbortController | null>(null);
 
@@ -599,7 +679,7 @@ export function ChatPage({
       setConversations(list);
       return list;
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to load conversations');
+      setError(err instanceof Error ? err.message : '加载会话失败');
       return [];
     }
   };
@@ -611,15 +691,18 @@ export function ChatPage({
       for (const msg of history) {
         loaded.push({ id: msg.id, role: 'user', content: msg.query });
         loaded.push({
-          id: `${msg.id}-answer`,
+          id: msg.id,
           role: 'assistant',
-          content: msg.answer,
+          content: stripThinkContent(msg.answer),
+          rawContent: msg.answer,
           files: msg.message_files ?? undefined,
+          usage: msg.metadata?.usage?.total_tokens,
+          createdAt: msg.created_at,
         });
       }
       setMessages(loaded);
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to load messages');
+      setError(err instanceof Error ? err.message : '加载消息失败');
     }
   }, [slug]);
 
@@ -656,7 +739,7 @@ export function ChatPage({
         setInputFormLoadError('');
       }
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to load app');
+      setError(err instanceof Error ? err.message : '加载应用失败');
     } finally {
       setLoading(false);
     }
@@ -669,7 +752,6 @@ export function ChatPage({
   const startNewConversation = () => {
     setActiveConversationId(undefined);
     setMessages([]);
-    setUsage(undefined);
     setPendingInputs({});
     setInputFormLoadError('');
 
@@ -700,10 +782,9 @@ export function ChatPage({
     }
     setLoading(true);
     setError('');
-    setUsage(undefined);
 
     const userMessage: ChatMessage = { role: 'user', content: query.trim() };
-    const assistantMessage: ChatMessage = { role: 'assistant', content: '' };
+    const assistantMessage: ChatMessage = { role: 'assistant', content: '', rawContent: '' };
     setMessages((prev) => [...prev, userMessage, assistantMessage]);
 
     const token = localStorage.getItem(TOKEN_KEY);
@@ -734,7 +815,12 @@ export function ChatPage({
               const next = [...prev];
               const last = next[next.length - 1];
               if (last.role === 'assistant') {
-                next[next.length - 1] = { ...last, content: last.content + answer };
+                const rawContent = (last.rawContent ?? last.content) + answer;
+                next[next.length - 1] = {
+                  ...last,
+                  rawContent,
+                  content: stripThinkContent(rawContent),
+                };
               }
               return next;
             });
@@ -759,9 +845,30 @@ export function ChatPage({
               setActiveConversationId(data.conversation_id);
               void loadConversations();
             }
+
             const totalTokens = ((data.metadata as Record<string, unknown> | undefined)?.usage as Record<string, unknown> | undefined)?.total_tokens;
+            const messageCreatedAt =
+              typeof data.created_at === 'number'
+                ? data.created_at
+                : typeof data.created_at === 'string'
+                  ? new Date(data.created_at).getTime()
+                  : Date.now();
+
+            setMessages((prev) => {
+              const next = [...prev];
+              const last = next[next.length - 1];
+              if (last.role === 'assistant') {
+                next[next.length - 1] = {
+                  ...last,
+                  id: typeof data.message_id === 'string' ? data.message_id : last.id,
+                  usage: typeof totalTokens === 'number' ? totalTokens : last.usage,
+                  createdAt: messageCreatedAt,
+                };
+              }
+              return next;
+            });
+
             if (typeof totalTokens === 'number') {
-              setUsage(totalTokens);
               onRefreshAccount?.();
             }
           },
@@ -793,14 +900,16 @@ export function ChatPage({
           ← 应用中心
         </button>
         <div className="chat-title">
-          <span className="chat-icon">{bootstrap?.app.icon ?? '🤖'}</span>
+          <span className="chat-icon">
+            <AppIcon icon={bootstrap?.app.icon ?? null} />
+          </span>
           <span>{bootstrap?.app.name ?? slug}</span>
         </div>
         <div className="chat-actions">
           <button className="secondary" onClick={startNewConversation} disabled={loading}>
             新建对话
           </button>
-          <button onClick={onLogout}>Logout</button>
+          <button onClick={onLogout}>退出登录</button>
         </div>
       </header>
 
@@ -815,7 +924,7 @@ export function ChatPage({
               onClick={() => {
                 setActiveConversationId(conv.id);
                 setPendingInputs(conv.inputs);
-                setUsage(undefined);
+                setError('');
                 void loadMessages(conv.id);
               }}
             >
@@ -849,23 +958,23 @@ export function ChatPage({
         <div className="messages">
           {messages.map((msg, idx) => (
             <div key={idx} className={`message ${msg.role}`}>
-              <div className="bubble">
-                {msg.content}
-                {msg.files && msg.files.length > 0 && (
-                  <div className="message-files">
-                    {msg.files.map((file, fidx) => (
-                      <img key={fidx} src={file.url} alt="message file" />
-                    ))}
-                  </div>
+              <div className="message-content">
+                <div className="bubble">
+                  {msg.content}
+                  {msg.files && msg.files.length > 0 && (
+                    <div className="message-files">
+                      {msg.files.map((file, fidx) => (
+                        <img key={fidx} src={file.url} alt="消息文件" />
+                      ))}
+                    </div>
+                  )}
+                </div>
+                {msg.role === 'assistant' && (msg.usage !== undefined || msg.createdAt !== undefined) && (
+                  <div className="message-meta">{formatMessageMeta(msg)}</div>
                 )}
               </div>
             </div>
           ))}
-          {usage !== undefined && (
-            <div className="usage">
-              本次消耗：{usage} Tokens
-            </div>
-          )}
           <div ref={messagesEndRef} />
         </div>
 
@@ -1069,7 +1178,7 @@ function AdminUsersTab() {
             {users.map((u) => (
               <tr key={u.id}>
                 <td>{u.username}</td>
-                <td>{u.role}</td>
+                <td>{u.role === 'admin' ? '管理员' : '用户'}</td>
                 <td>{u.gift_tokens.toLocaleString()}</td>
                 <td>{u.recharge_tokens.toLocaleString()}</td>
                 <td>{u.total_tokens.toLocaleString()}</td>
@@ -1420,7 +1529,7 @@ function App() {
   if (loading) {
     return (
       <div className="app">
-        <p>Loading...</p>
+        <p>加载中...</p>
       </div>
     );
   }

@@ -79,7 +79,7 @@ export function authRoutes(fastify: FastifyInstance, options: { pool: Pool }): v
   fastify.post('/register', async (request: FastifyRequest, reply: FastifyReply) => {
     const body = request.body;
     if (!validateAuthBody(body)) {
-      return await reply.status(400).send({ error: 'Invalid request body' });
+      return await reply.status(400).send({ error: '请求格式错误' });
     }
 
     const { username, password } = body;
@@ -87,17 +87,17 @@ export function authRoutes(fastify: FastifyInstance, options: { pool: Pool }): v
     if (!validateUsername(username)) {
       return await reply
         .status(400)
-        .send({ error: 'Username must be 3-32 characters and contain only letters, numbers, and underscores' });
+        .send({ error: '用户名必须为 3-32 位，只能包含字母、数字和下划线' });
     }
 
     if (!validatePassword(password)) {
-      return await reply.status(400).send({ error: 'Password must be at least 6 characters' });
+      return await reply.status(400).send({ error: '密码至少 6 位' });
     }
 
     try {
       const existing = await findUserByUsername(pool, username);
       if (existing) {
-        return await reply.status(409).send({ error: 'Username already exists' });
+        return await reply.status(409).send({ error: '用户名已存在' });
       }
 
       const passwordHash = await hashPassword(password);
@@ -115,7 +115,7 @@ export function authRoutes(fastify: FastifyInstance, options: { pool: Pool }): v
         const inserted = result.rows.at(0);
         if (!inserted) {
           await client.query('ROLLBACK');
-          return await reply.status(500).send({ error: 'Internal server error' });
+          return await reply.status(500).send({ error: '服务器内部错误' });
         }
         user = inserted;
 
@@ -137,14 +137,14 @@ export function authRoutes(fastify: FastifyInstance, options: { pool: Pool }): v
       const token = signToken(toSafeUser(user));
       return await reply.status(201).send({ token, user: toSafeUser(user) });
     } catch {
-      return await reply.status(500).send({ error: 'Internal server error' });
+      return await reply.status(500).send({ error: '服务器内部错误' });
     }
   });
 
   fastify.post('/login', async (request: FastifyRequest, reply: FastifyReply) => {
     const body = request.body;
     if (!validateAuthBody(body)) {
-      return await reply.status(400).send({ error: 'Invalid request body' });
+      return await reply.status(400).send({ error: '请求格式错误' });
     }
 
     const { username, password } = body;
@@ -152,25 +152,25 @@ export function authRoutes(fastify: FastifyInstance, options: { pool: Pool }): v
     try {
       const user = await findUserByUsername(pool, username);
       if (!user) {
-        return await reply.status(401).send({ error: 'Invalid username or password' });
+        return await reply.status(401).send({ error: '用户名或密码错误' });
       }
 
       const valid = await verifyPassword(password, user.password_hash);
       if (!valid) {
-        return await reply.status(401).send({ error: 'Invalid username or password' });
+        return await reply.status(401).send({ error: '用户名或密码错误' });
       }
 
       const token = signToken(toSafeUser(user));
       return await reply.send({ token, user: toSafeUser(user) });
     } catch {
-      return await reply.status(500).send({ error: 'Internal server error' });
+      return await reply.status(500).send({ error: '服务器内部错误' });
     }
   });
 
   fastify.get('/me', { preHandler: authenticate }, async (request: FastifyRequest, reply: FastifyReply) => {
     const userId = request.user?.id;
     if (!userId) {
-      return await reply.status(401).send({ error: 'Unauthorized' });
+      return await reply.status(401).send({ error: '未登录' });
     }
 
     try {
@@ -181,12 +181,12 @@ export function authRoutes(fastify: FastifyInstance, options: { pool: Pool }): v
 
       const user = result.rows.at(0);
       if (!user) {
-        return await reply.status(401).send({ error: 'Unauthorized' });
+        return await reply.status(401).send({ error: '未登录' });
       }
 
       return await reply.send(toSafeUser(user));
     } catch {
-      return await reply.status(500).send({ error: 'Internal server error' });
+      return await reply.status(500).send({ error: '服务器内部错误' });
     }
   });
 
@@ -196,18 +196,18 @@ export function authRoutes(fastify: FastifyInstance, options: { pool: Pool }): v
     async (request: FastifyRequest, reply: FastifyReply) => {
       const userId = request.user?.id;
       if (!userId) {
-        return await reply.status(401).send({ error: 'Unauthorized' });
+        return await reply.status(401).send({ error: '未登录' });
       }
 
       const body = request.body;
       if (!validateChangePasswordBody(body)) {
-        return await reply.status(400).send({ error: 'Invalid request body' });
+        return await reply.status(400).send({ error: '请求格式错误' });
       }
 
       const { currentPassword, newPassword } = body;
 
       if (!validatePassword(newPassword)) {
-        return await reply.status(400).send({ error: 'New password must be at least 6 characters' });
+        return await reply.status(400).send({ error: '新密码至少 6 位' });
       }
 
       try {
@@ -218,12 +218,12 @@ export function authRoutes(fastify: FastifyInstance, options: { pool: Pool }): v
 
         const user = result.rows.at(0);
         if (!user) {
-          return await reply.status(401).send({ error: 'Unauthorized' });
+          return await reply.status(401).send({ error: '未登录' });
         }
 
         const valid = await verifyPassword(currentPassword, user.password_hash);
         if (!valid) {
-          return await reply.status(401).send({ error: 'Current password is incorrect' });
+          return await reply.status(401).send({ error: '当前密码错误' });
         }
 
         const newHash = await hashPassword(newPassword);
@@ -232,9 +232,9 @@ export function authRoutes(fastify: FastifyInstance, options: { pool: Pool }): v
           user.id,
         ]);
 
-        return await reply.send({ message: 'Password updated successfully' });
+        return await reply.send({ message: '密码已更新，请重新登录' });
       } catch {
-        return await reply.status(500).send({ error: 'Internal server error' });
+        return await reply.status(500).send({ error: '服务器内部错误' });
       }
     }
   );

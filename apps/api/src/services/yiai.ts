@@ -30,12 +30,29 @@ interface YiaiSiteResponse {
   title?: string;
   icon?: string;
   description?: string;
+  site_info?: {
+    title?: string;
+    icon?: string;
+    description?: string;
+  };
 }
 
 interface YiaiParametersResponse {
   opening_statement?: string;
   suggested_questions?: string[];
   user_input_form?: unknown;
+}
+
+export interface AppMetadata {
+  name: string | null;
+  description: string | null;
+  icon: string | null;
+  user_input_form: UserInputFormField[] | null;
+}
+
+interface UpstreamAppMetadata extends AppMetadata {
+  opening_statement: string | null;
+  suggested_questions: string[] | null;
 }
 
 function normalizeOptions(options: unknown): UserInputFormField['options'] {
@@ -103,7 +120,7 @@ function normalizeUserInputForm(raw: unknown): UserInputFormField[] | null {
 
 export class YiaiAppNotFoundError extends Error {
   constructor(slug: string) {
-    super(`App not found: ${slug}`);
+    super(`应用不存在: ${slug}`);
     this.name = 'YiaiAppNotFoundError';
   }
 }
@@ -145,11 +162,11 @@ async function yiaiGet<T>(url: string, apiKey: string): Promise<T> {
       },
     });
   } catch (err) {
-    throw new YiaiUpstreamError(`YIAI API request failed: ${err instanceof Error ? err.message : 'unknown error'}`);
+    throw new YiaiUpstreamError(`YIAI 接口请求失败: ${err instanceof Error ? err.message : '未知错误'}`);
   }
 
   if (!response.ok) {
-    throw new YiaiUpstreamError(`YIAI API error: ${String(response.status)} ${response.statusText}`);
+    throw new YiaiUpstreamError(`YIAI 接口返回错误: ${String(response.status)} ${response.statusText}`);
   }
 
   return (await response.json()) as T;
@@ -162,40 +179,97 @@ export interface AppBootstrapResult {
   user_input_form: UserInputFormField[] | null;
 }
 
+function pickSiteInfo(site: YiaiSiteResponse): { title?: string; description?: string; icon?: string } {
+  return site.site_info ?? site;
+}
+
+async function fetchUpstreamAppMetadata(baseUrl: string, apiKey: string): Promise<UpstreamAppMetadata> {
+  const normalizedBaseUrl = baseUrl.replace(/\/$/, '');
+
+  const [info, site, parameters] = await Promise.all([
+    yiaiGet<YiaiInfoResponse>(`${normalizedBaseUrl}/info`, apiKey),
+    yiaiGet<YiaiSiteResponse>(`${normalizedBaseUrl}/site`, apiKey),
+    yiaiGet<YiaiParametersResponse>(`${normalizedBaseUrl}/parameters`, apiKey),
+  ]);
+
+  const siteInfo = pickSiteInfo(site);
+
+  const name: string | null =
+    (typeof siteInfo.title === 'string' && siteInfo.title.trim() !== '' ? siteInfo.title : null) ??
+    (typeof info.name === 'string' && info.name.trim() !== '' ? info.name : null);
+
+  const description: string | null =
+    (typeof siteInfo.description === 'string' && siteInfo.description.trim() !== '' ? siteInfo.description : null) ??
+    (typeof info.description === 'string' && info.description.trim() !== '' ? info.description : null) ??
+    null;
+
+  const icon: string | null =
+    (typeof info.icon === 'string' && info.icon.trim() !== '' ? info.icon : null) ??
+    (typeof siteInfo.icon === 'string' && siteInfo.icon.trim() !== '' ? siteInfo.icon : null) ??
+    null;
+
+  return {
+    name,
+    description,
+    icon,
+    user_input_form: normalizeUserInputForm(parameters.user_input_form),
+    opening_statement: parameters.opening_statement ?? null,
+    suggested_questions: parameters.suggested_questions ?? null,
+  };
+}
+
+export async function fetchAppMetadata(
+  poolOrBaseUrl: Pool | string,
+  slugOrApiKey: string
+): Promise<AppMetadata> {
+  let baseUrl: string;
+  let apiKey: string;
+
+  if (typeof poolOrBaseUrl === 'string') {
+    baseUrl = poolOrBaseUrl;
+    apiKey = slugOrApiKey;
+  } else {
+    const result = await poolOrBaseUrl.query<DbApp>('SELECT * FROM yiai_apps WHERE slug = $1', [slugOrApiKey]);
+    const app = result.rows.at(0);
+    if (!app) {
+      throw new YiaiAppNotFoundError(slugOrApiKey);
+    }
+    baseUrl = app.api_base_url;
+    apiKey = app.api_key;
+  }
+
+  const metadata = await fetchUpstreamAppMetadata(baseUrl, apiKey);
+  return {
+    name: metadata.name,
+    description: metadata.description,
+    icon: metadata.icon,
+    user_input_form: metadata.user_input_form,
+  };
+}
+
 export async function bootstrapApp(pool: Pool, slug: string): Promise<AppBootstrapResult> {
   const app = await findAppBySlug(pool, slug);
   if (!app) {
     throw new YiaiAppNotFoundError(slug);
   }
 
-  const baseUrl = app.api_base_url.replace(/\/$/, '');
-
-  const [info, parameters, site] = await Promise.all([
-    yiaiGet<YiaiInfoResponse>(`${baseUrl}/info`, app.api_key),
-    yiaiGet<YiaiParametersResponse>(`${baseUrl}/parameters`, app.api_key),
-    yiaiGet<YiaiSiteResponse>(`${baseUrl}/site`, app.api_key),
-  ]);
-
-  // 数据库配置始终优先；仅当数据库字段为空时才使用上游可选信息作为回退。
-  const fallbackName = info.name || site.title;
-  const fallbackDescription = info.description || site.description;
-  const fallbackIcon = info.icon || site.icon;
+  const metadata = await fetchUpstreamAppMetadata(app.api_base_url, app.api_key);
 
   return {
     app: {
       id: app.id,
       slug: app.slug,
-      name: app.name || fallbackName || slug,
-      description: app.description ?? fallbackDescription ?? null,
-      icon: app.icon ?? fallbackIcon ?? null,
+      name: app.name || metadata.name || slug,
+      description: app.description ?? metadata.description ?? null,
+      icon: app.icon ?? metadata.icon ?? null,
       sort_order: app.sort_order,
       requires_new_conversation_inputs: app.requires_new_conversation_inputs,
       created_at: app.created_at,
       updated_at: app.updated_at,
     },
-    opening_statement: parameters.opening_statement ?? null,
-    suggested_questions: parameters.suggested_questions ?? null,
-    user_input_form: normalizeUserInputForm(parameters.user_input_form),
+    opening_statement: metadata.opening_statement,
+    suggested_questions: metadata.suggested_questions,
+    user_input_form: metadata.user_input_form,
   };
 }
 
@@ -236,6 +310,28 @@ export async function listMessages(
 
   const response = await yiaiGet<YiaiApiResponse<YiaiMessage>>(url, app.api_key);
   const messages = response.data ?? [];
+
+  const usageResult = await pool.query<{ message_id: string; total_tokens: number }>(
+    `SELECT message_id, total_tokens
+     FROM yiai_usage_records
+     WHERE user_id = $1 AND conversation_id = $2`,
+    [userId, conversationId]
+  );
+  const usageMap = new Map(usageResult.rows.map((row) => [row.message_id, row.total_tokens]));
+
+  for (const message of messages) {
+    const recorded = usageMap.get(message.id);
+    if (recorded !== undefined && message.metadata?.usage?.total_tokens === undefined) {
+      message.metadata = {
+        ...(message.metadata ?? {}),
+        usage: {
+          ...(message.metadata?.usage ?? {}),
+          total_tokens: recorded,
+        },
+      };
+    }
+  }
+
   // YIAI returns newest first; frontend needs oldest first
   return messages.slice().sort((a, b) => a.created_at - b.created_at);
 }
@@ -292,7 +388,7 @@ export async function recordUsage(client: Pool | PoolClient, payload: UsageRecor
   );
   const row = result.rows.at(0);
   if (!row) {
-    throw new Error('Failed to record usage');
+    throw new Error('记录用量失败');
   }
   return row.id;
 }

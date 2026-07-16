@@ -104,13 +104,43 @@ describe('App Routes', () => {
     }
   });
 
+  it('returns real name/description/icon from database in apps list', async () => {
+    const app = await buildTestApp(pool);
+    const token = await loginUser(app, 'test_user', 'testpass');
+
+    const response = await app.inject({
+      method: 'GET',
+      url: '/api/apps',
+      headers: { Authorization: `Bearer ${token}` },
+    });
+
+    expect(response.statusCode).toBe(200);
+    const body = JSON.parse(response.body) as YiaiApp[];
+    const zhouyi = body.find((a) => a.slug === 'zhouyi-divination');
+    expect(zhouyi).toBeDefined();
+    expect(zhouyi?.name).toBe('周易占卦');
+    expect(zhouyi?.description).toBe('数据库描述');
+    expect(zhouyi?.icon).toBe('🔮');
+
+    const dunjiazi = body.find((a) => a.slug === 'dunjiazi');
+    expect(dunjiazi?.name).toBe('遁甲子');
+    expect(dunjiazi?.description).toBeNull();
+    expect(dunjiazi?.icon).toBeNull();
+  });
+
   it('returns bootstrap without api_key', async () => {
     fetchMock
       .mockResolvedValueOnce(new Response(JSON.stringify({ name: 'Upstream Name', description: 'Upstream desc' })))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ title: 'Site Title' })))
       .mockResolvedValueOnce(
-        new Response(JSON.stringify({ opening_statement: '欢迎使用', suggested_questions: ['q1'], user_input_form: [{ type: 'text-input', label: 'Name', variable: 'name', required: true }] }))
-      )
-      .mockResolvedValueOnce(new Response(JSON.stringify({ title: 'Site Title' })));
+        new Response(
+          JSON.stringify({
+            opening_statement: '欢迎使用',
+            suggested_questions: ['q1'],
+            user_input_form: [{ type: 'text-input', label: 'Name', variable: 'name', required: true }],
+          })
+        )
+      );
 
     const app = await buildTestApp(pool);
     const token = await loginUser(app, 'test_user', 'testpass');
@@ -324,8 +354,8 @@ describe('App Routes', () => {
   });
 
   it('requires required user_input_form fields for shouyi app and normalizes string[] options', async () => {
-    const infoResponse = () =>
-      Promise.resolve(new Response(JSON.stringify({ name: 'Info', description: '' })));
+    const infoResponse = () => Promise.resolve(new Response(JSON.stringify({ name: 'Info', description: '' })));
+    const siteResponse = () => Promise.resolve(new Response(JSON.stringify({ title: 'Site' })));
     const parametersResponse = () =>
       Promise.resolve(
         new Response(
@@ -350,15 +380,14 @@ describe('App Routes', () => {
           })
         )
       );
-    const siteResponse = () => Promise.resolve(new Response(JSON.stringify({ title: 'Site' })));
 
     fetchMock
       .mockImplementationOnce(infoResponse)
-      .mockImplementationOnce(parametersResponse)
       .mockImplementationOnce(siteResponse)
-      .mockImplementationOnce(infoResponse)
       .mockImplementationOnce(parametersResponse)
-      .mockImplementationOnce(siteResponse);
+      .mockImplementationOnce(infoResponse)
+      .mockImplementationOnce(siteResponse)
+      .mockImplementationOnce(parametersResponse);
 
     const app = await buildTestApp(pool);
     const token = await loginUser(app, 'test_user', 'testpass');

@@ -100,6 +100,11 @@ export interface YiaiMessage {
   answer: string;
   message_files?: YiaiMessageFile[] | null;
   created_at: number;
+  metadata?: {
+    usage?: {
+      total_tokens?: number;
+    };
+  };
 }
 
 export interface ChatRequest {

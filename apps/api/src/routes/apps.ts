@@ -49,7 +49,7 @@ export function appRoutes(fastify: FastifyInstance, options: { pool: Pool }): vo
       const apps = await listEnabledApps(pool);
       return await reply.send(apps);
     } catch {
-      return await reply.status(500).send({ error: 'Internal server error' });
+      return await reply.status(500).send({ error: '服务器内部错误' });
     }
   });
 
@@ -58,7 +58,7 @@ export function appRoutes(fastify: FastifyInstance, options: { pool: Pool }): vo
     const { slug } = params;
     const userId = request.user?.id;
     if (!userId) {
-      return await reply.status(401).send({ error: 'Unauthorized' });
+      return await reply.status(401).send({ error: '未登录' });
     }
 
     try {
@@ -71,7 +71,7 @@ export function appRoutes(fastify: FastifyInstance, options: { pool: Pool }): vo
       if (err instanceof YiaiUpstreamError) {
         return await reply.status(502).send({ error: err.message });
       }
-      return await reply.status(500).send({ error: 'Internal server error' });
+      return await reply.status(500).send({ error: '服务器内部错误' });
     }
   });
 
@@ -80,7 +80,7 @@ export function appRoutes(fastify: FastifyInstance, options: { pool: Pool }): vo
     const { slug } = params;
     const userId = request.user?.id;
     if (!userId) {
-      return await reply.status(401).send({ error: 'Unauthorized' });
+      return await reply.status(401).send({ error: '未登录' });
     }
 
     try {
@@ -93,7 +93,7 @@ export function appRoutes(fastify: FastifyInstance, options: { pool: Pool }): vo
       if (err instanceof YiaiUpstreamError) {
         return await reply.status(502).send({ error: err.message });
       }
-      return await reply.status(500).send({ error: 'Internal server error' });
+      return await reply.status(500).send({ error: '服务器内部错误' });
     }
   });
 
@@ -104,7 +104,7 @@ export function appRoutes(fastify: FastifyInstance, options: { pool: Pool }): vo
       const { slug, conversationId } = params;
       const userId = request.user?.id;
       if (!userId) {
-        return await reply.status(401).send({ error: 'Unauthorized' });
+        return await reply.status(401).send({ error: '未登录' });
       }
 
       try {
@@ -117,7 +117,7 @@ export function appRoutes(fastify: FastifyInstance, options: { pool: Pool }): vo
         if (err instanceof YiaiUpstreamError) {
           return await reply.status(502).send({ error: err.message });
         }
-        return await reply.status(500).send({ error: 'Internal server error' });
+        return await reply.status(500).send({ error: '服务器内部错误' });
       }
     }
   );
@@ -127,12 +127,12 @@ export function appRoutes(fastify: FastifyInstance, options: { pool: Pool }): vo
     const { slug } = params;
     const userId = request.user?.id;
     if (!userId) {
-      return await reply.status(401).send({ error: 'Unauthorized' });
+      return await reply.status(401).send({ error: '未登录' });
     }
 
     const body = request.body as ChatRequest | undefined;
     if (!body || typeof body.query !== 'string' || body.query.trim().length === 0) {
-      return await reply.status(400).send({ error: 'Invalid request body' });
+      return await reply.status(400).send({ error: '请求格式错误' });
     }
 
     let upstreamResponse: Response;
@@ -144,7 +144,7 @@ export function appRoutes(fastify: FastifyInstance, options: { pool: Pool }): vo
       }>('SELECT id, requires_new_conversation_inputs FROM yiai_apps WHERE slug = $1 AND enabled = true', [slug]);
       appRow = appResult.rows.at(0);
       if (!appRow) {
-        return await reply.status(404).send({ error: `App not found: ${slug}` });
+        return await reply.status(404).send({ error: `应用不存在: ${slug}` });
       }
 
       if (appRow.requires_new_conversation_inputs && !body.conversation_id) {
@@ -175,15 +175,15 @@ export function appRoutes(fastify: FastifyInstance, options: { pool: Pool }): vo
       if (err instanceof YiaiUpstreamError) {
         return await reply.status(502).send({ error: err.message });
       }
-      return await reply.status(500).send({ error: 'Internal server error' });
+      return await reply.status(500).send({ error: '服务器内部错误' });
     }
 
     if (!upstreamResponse.ok) {
-      return await reply.status(502).send({ error: 'Upstream API error' });
+      return await reply.status(502).send({ error: '上游接口错误' });
     }
 
     if (!upstreamResponse.body) {
-      return await reply.status(502).send({ error: 'Upstream response has no body' });
+      return await reply.status(502).send({ error: '上游响应为空' });
     }
 
     const appId = appRow.id;

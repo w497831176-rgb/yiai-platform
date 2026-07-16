@@ -263,9 +263,66 @@ describe('Token Account Service', () => {
     expect(rechargeEntry?.delta_tokens).toBe(10000);
   });
 
+  it('handles PostgreSQL BIGINT string and caps daily gift at 100000 across two days', async () => {
+    const app = await buildApp(pool);
+    const userId = await createTestUser(pool, 'bigint_user');
+
+    // 模拟 PostgreSQL BIGINT 以字符串形式返回，且上次赠送为两天前
+    await pool.query(
+      "UPDATE token_accounts SET gift_tokens = $1, last_gift_date = CURRENT_DATE - INTERVAL '2 days' WHERE user_id = $2",
+      ['25000', userId]
+    );
+
+    const token = await login(app, 'bigint_user', 'secret123');
+
+    const accountResponse = await app.inject({
+      method: 'GET',
+      url: '/api/token-account',
+      headers: { Authorization: `Bearer ${token}` },
+    });
+
+    expect(accountResponse.statusCode).toBe(200);
+    const account = JSON.parse(accountResponse.body) as { gift_tokens: number };
+    expect(account.gift_tokens).toBe(100000);
+
+    const ledger = await pool.query<{ entry_type: string; delta_tokens: number }>(
+      'SELECT entry_type, delta_tokens FROM token_ledger_entries WHERE user_id = $1 ORDER BY created_at ASC',
+      [userId]
+    );
+    const gifts = ledger.rows.filter((e) => e.entry_type === 'daily_gift');
+    expect(gifts).toHaveLength(2);
+    expect(gifts[0].delta_tokens).toBe(50000);
+    expect(gifts[1].delta_tokens).toBe(25000);
+  });
+
+  it('triggers daily gift make-up when admin lists users', async () => {
+    const app = await buildApp(pool);
+    await createTestUser(pool, 'test_admin', 'admin');
+    const userId = await createTestUser(pool, 'gift_target');
+    await pool.query(
+      "UPDATE token_accounts SET gift_tokens = 0, last_gift_date = CURRENT_DATE - INTERVAL '1 day' WHERE user_id = $1",
+      [userId]
+    );
+
+    const adminToken = await login(app, 'test_admin', 'secret123');
+
+    const usersResponse = await app.inject({
+      method: 'GET',
+      url: '/api/admin/users',
+      headers: { Authorization: `Bearer ${adminToken}` },
+    });
+
+    expect(usersResponse.statusCode).toBe(200);
+    const users = JSON.parse(usersResponse.body) as Array<{ id: string; gift_tokens: number }>;
+    const target = users.find((u) => u.id === userId);
+    expect(target).toBeDefined();
+    expect(target?.gift_tokens).toBe(50000);
+  });
+
   it('prevents non-admin users from accessing admin endpoints', async () => {
     const app = await buildApp(pool);
     const userId = await createTestUser(pool, 'normal_user');
+    const appId = await createTestApp(pool, { slug: 'admin-test-app', api_key: 'key' });
     const token = await login(app, 'normal_user', 'secret123');
 
     const endpoints = [
@@ -273,6 +330,9 @@ describe('Token Account Service', () => {
       { method: 'GET' as const, url: `/api/admin/users/${userId}/ledger` },
       { method: 'POST' as const, url: `/api/admin/users/${userId}/recharge`, payload: { amount: 100 } },
       { method: 'GET' as const, url: '/api/admin/apps' },
+      { method: 'POST' as const, url: '/api/admin/apps', payload: { slug: 'x', api_base_url: 'https://x', api_key: 'k' } },
+      { method: 'PATCH' as const, url: `/api/admin/apps/${appId}`, payload: { name: 'x' } },
+      { method: 'POST' as const, url: `/api/admin/apps/${appId}/sync` },
     ];
 
     for (const endpoint of endpoints) {

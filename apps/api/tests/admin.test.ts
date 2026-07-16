@@ -28,10 +28,38 @@ async function login(app: FastifyInstance, username: string, password: string): 
   return body.token;
 }
 
+function mockUpstreamMetadata(
+  fetchMock: ReturnType<typeof vi.fn<typeof fetch>>,
+  overrides: {
+    info?: Record<string, unknown>;
+    site?: Record<string, unknown>;
+    parameters?: Record<string, unknown>;
+  } = {}
+) {
+  fetchMock
+    .mockResolvedValueOnce(new Response(JSON.stringify(overrides.info ?? { name: 'Upstream Name', description: 'Upstream desc' })))
+    .mockResolvedValueOnce(new Response(JSON.stringify(overrides.site ?? { title: 'Site Title', icon: '🤖' })))
+    .mockResolvedValueOnce(
+      new Response(
+        JSON.stringify(
+          overrides.parameters ?? {
+            opening_statement: '欢迎使用',
+            suggested_questions: ['q1'],
+            user_input_form: [{ type: 'text-input', label: 'Name', variable: 'name', required: true }],
+          }
+        )
+      )
+    );
+}
+
 describe('Admin Routes', () => {
   let pool: Pool;
+  const fetchMock = vi.fn<typeof fetch>();
+
+  vi.stubGlobal('fetch', fetchMock);
 
   beforeEach(async () => {
+    fetchMock.mockReset();
     pool = await createInMemoryPool();
   });
 
@@ -55,9 +83,11 @@ describe('Admin Routes', () => {
     expect(body[0].api_key_configured).toBe(true);
   });
 
-  it('allows admin to create and update apps', async () => {
+  it('creates Chatflow app after fetching upstream metadata and hides api_key', async () => {
     const app = await buildApp(pool);
     await createTestUser(pool, 'admin_user', 'admin', 'testpass');
+
+    mockUpstreamMetadata(fetchMock);
 
     const token = await login(app, 'admin_user', 'testpass');
 
@@ -67,7 +97,97 @@ describe('Admin Routes', () => {
       headers: { Authorization: `Bearer ${token}` },
       payload: {
         slug: 'new-app',
-        name: 'New App',
+        api_base_url: 'https://yiai.example.com/v1',
+        api_key: 'initial-key',
+        sort_order: 1,
+      },
+    });
+
+    expect(createResponse.statusCode).toBe(201);
+    const created = JSON.parse(createResponse.body) as Record<string, unknown>;
+    expect(created).not.toHaveProperty('api_key');
+    expect(created.api_key_configured).toBe(true);
+    expect(created.name).toBe('Site Title');
+    expect(created.description).toBe('Upstream desc');
+    expect(created.icon).toBe('🤖');
+    expect(created.requires_new_conversation_inputs).toBe(true);
+
+    // Verify upstream endpoints were called
+    expect(fetchMock).toHaveBeenCalledTimes(3);
+    const [infoCall, siteCall, parametersCall] = fetchMock.mock.calls;
+    expect(infoCall[0]).toBe('https://yiai.example.com/v1/info');
+    expect(siteCall[0]).toBe('https://yiai.example.com/v1/site');
+    expect(parametersCall[0]).toBe('https://yiai.example.com/v1/parameters');
+  });
+
+  it('auto detects requires_new_conversation_inputs when not provided', async () => {
+    const app = await buildApp(pool);
+    await createTestUser(pool, 'admin_user', 'admin', 'testpass');
+
+    fetchMock
+      .mockResolvedValueOnce(new Response(JSON.stringify({ name: 'No Form' })))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ title: 'No Form Site' })))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ user_input_form: [] })));
+
+    const token = await login(app, 'admin_user', 'testpass');
+
+    const createResponse = await app.inject({
+      method: 'POST',
+      url: '/api/admin/apps',
+      headers: { Authorization: `Bearer ${token}` },
+      payload: {
+        slug: 'no-form-app',
+        api_base_url: 'https://yiai.example.com/v2',
+        api_key: 'key',
+      },
+    });
+
+    expect(createResponse.statusCode).toBe(201);
+    const created = JSON.parse(createResponse.body) as Record<string, unknown>;
+    expect(created.requires_new_conversation_inputs).toBe(false);
+  });
+
+  it('returns 400 when upstream metadata sync fails', async () => {
+    const app = await buildApp(pool);
+    await createTestUser(pool, 'admin_user', 'admin', 'testpass');
+
+    fetchMock.mockRejectedValueOnce(new Error('network error'));
+
+    const token = await login(app, 'admin_user', 'testpass');
+
+    const createResponse = await app.inject({
+      method: 'POST',
+      url: '/api/admin/apps',
+      headers: { Authorization: `Bearer ${token}` },
+      payload: {
+        slug: 'bad-app',
+        api_base_url: 'https://yiai.example.com/v1',
+        api_key: 'key',
+      },
+    });
+
+    expect(createResponse.statusCode).toBe(400);
+    const body = JSON.parse(createResponse.body) as { error: string };
+    expect(body.error).toContain('同步应用元数据失败');
+
+    const dbResult = await pool.query('SELECT * FROM yiai_apps WHERE slug = $1', ['bad-app']);
+    expect(dbResult.rows).toHaveLength(0);
+  });
+
+  it('allows admin to update apps and respects empty api_key', async () => {
+    const app = await buildApp(pool);
+    await createTestUser(pool, 'admin_user', 'admin', 'testpass');
+
+    mockUpstreamMetadata(fetchMock);
+
+    const token = await login(app, 'admin_user', 'testpass');
+
+    const createResponse = await app.inject({
+      method: 'POST',
+      url: '/api/admin/apps',
+      headers: { Authorization: `Bearer ${token}` },
+      payload: {
+        slug: 'new-app',
         api_base_url: 'https://yiai.example.com/v1',
         api_key: 'initial-key',
         sort_order: 1,
@@ -127,10 +247,67 @@ describe('Admin Routes', () => {
     expect(dbResult.rows[0].api_key).toBe('old-key');
   });
 
+  it('syncs existing app metadata without exposing api_key', async () => {
+    const app = await buildApp(pool);
+    await createTestUser(pool, 'admin_user', 'admin', 'testpass');
+    const appId = await createTestApp(pool, { slug: 'sync-app', name: 'Old Name', api_key: 'secret-key' });
+
+    fetchMock
+      .mockResolvedValueOnce(new Response(JSON.stringify({ name: 'Synced Name' })))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ site_info: { title: 'Synced Site', description: 'Synced desc', icon: '🔄' } })))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ user_input_form: [] })));
+
+    const token = await login(app, 'admin_user', 'testpass');
+
+    const syncResponse = await app.inject({
+      method: 'POST',
+      url: `/api/admin/apps/${appId}/sync`,
+      headers: { Authorization: `Bearer ${token}` },
+    });
+
+    expect(syncResponse.statusCode).toBe(200);
+    const synced = JSON.parse(syncResponse.body) as Record<string, unknown>;
+    expect(synced).not.toHaveProperty('api_key');
+    expect(synced.api_key_configured).toBe(true);
+    expect(synced.name).toBe('Synced Site');
+    expect(synced.description).toBe('Synced desc');
+    expect(synced.icon).toBe('🔄');
+  });
+
+  it('sync endpoint preserves requires_new_conversation_inputs by default', async () => {
+    const app = await buildApp(pool);
+    await createTestUser(pool, 'admin_user', 'admin', 'testpass');
+    const appId = await createTestApp(pool, {
+      slug: 'sync-flags',
+      name: 'Flag App',
+      requires_new_conversation_inputs: true,
+      api_key: 'key',
+    });
+
+    fetchMock
+      .mockResolvedValueOnce(new Response(JSON.stringify({ name: 'Flag Name' })))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ title: 'Flag Site' })))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ user_input_form: [] })));
+
+    const token = await login(app, 'admin_user', 'testpass');
+
+    const syncResponse = await app.inject({
+      method: 'POST',
+      url: `/api/admin/apps/${appId}/sync`,
+      headers: { Authorization: `Bearer ${token}` },
+    });
+
+    expect(syncResponse.statusCode).toBe(200);
+    const synced = JSON.parse(syncResponse.body) as Record<string, unknown>;
+    expect(synced.requires_new_conversation_inputs).toBe(true);
+  });
+
   it('prevents duplicate slug when creating apps', async () => {
     const app = await buildApp(pool);
     await createTestUser(pool, 'admin_user', 'admin', 'testpass');
     await createTestApp(pool, { slug: 'dup-app', name: 'Dup App' });
+
+    mockUpstreamMetadata(fetchMock);
 
     const token = await login(app, 'admin_user', 'testpass');
 
@@ -138,9 +315,34 @@ describe('Admin Routes', () => {
       method: 'POST',
       url: '/api/admin/apps',
       headers: { Authorization: `Bearer ${token}` },
-      payload: { slug: 'dup-app', name: 'Another', api_base_url: 'https://yiai.example.com/v1' },
+      payload: { slug: 'dup-app', name: 'Another', api_base_url: 'https://yiai.example.com/v1', api_key: 'key' },
     });
 
     expect(response.statusCode).toBe(409);
+  });
+
+  it('prevents non-admin users from accessing admin endpoints', async () => {
+    const app = await buildApp(pool);
+    const userId = await createTestUser(pool, 'normal_user');
+    const appId = await createTestApp(pool, { slug: 'admin-test-app', api_key: 'key' });
+    const token = await login(app, 'normal_user', 'secret123');
+
+    const endpoints = [
+      { method: 'GET' as const, url: '/api/admin/users' },
+      { method: 'GET' as const, url: `/api/admin/users/${userId}/ledger` },
+      { method: 'POST' as const, url: `/api/admin/users/${userId}/recharge`, payload: { amount: 100 } },
+      { method: 'GET' as const, url: '/api/admin/apps' },
+      { method: 'POST' as const, url: '/api/admin/apps', payload: { slug: 'x', api_base_url: 'https://x', api_key: 'k' } },
+      { method: 'PATCH' as const, url: `/api/admin/apps/${appId}`, payload: { name: 'x' } },
+      { method: 'POST' as const, url: `/api/admin/apps/${appId}/sync` },
+    ];
+
+    for (const endpoint of endpoints) {
+      const response = await app.inject({
+        ...endpoint,
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      expect(response.statusCode).toBe(403);
+    }
   });
 });

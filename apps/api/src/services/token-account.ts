@@ -126,7 +126,7 @@ export async function ensureDailyGift(pool: Pool, userId: string, now = new Date
       throw new Error(`Token account not found for user ${userId}`);
     }
 
-    const lockedAccount = lockResult.rows[0];
+    const lockedAccount = normalizeTokenAccount(lockResult.rows[0]);
     const lastGiftDate = lockedAccount.last_gift_date;
     const daysToGrant = diffCalendarDays(lastGiftDate, todayStr);
 
