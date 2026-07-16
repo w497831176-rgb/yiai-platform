@@ -18,7 +18,7 @@ export function authenticate(
 ): void {
   const authHeader = request.headers.authorization;
   if (!authHeader || !authHeader.startsWith('Bearer ')) {
-    void reply.status(401).send({ error: 'Unauthorized' });
+    void reply.status(401).send({ error: '请先登录' });
     return;
   }
 
@@ -27,6 +27,6 @@ export function authenticate(
     request.user = verifyToken(token);
     done();
   } catch {
-    void reply.status(401).send({ error: 'Unauthorized' });
+    void reply.status(401).send({ error: '登录已过期，请重新登录' });
   }
 }
