@@ -363,11 +363,11 @@ describe('App Routes', () => {
     ]);
   });
 
-  it('rejects chat when user has no token balance', async () => {
+  it('rejects chat when both gift and recharge balances are not positive', async () => {
     const app = await buildTestApp(pool);
     const userId = await createTestUser(pool, 'broke_user', 'user', 'testpass');
     await pool.query(
-      'UPDATE token_accounts SET gift_tokens = 0, recharge_tokens = 0, last_gift_date = CURRENT_DATE WHERE user_id = $1',
+      'UPDATE token_accounts SET gift_tokens = -1, recharge_tokens = -1, last_gift_date = CURRENT_DATE WHERE user_id = $1',
       [userId]
     );
 
@@ -381,9 +381,91 @@ describe('App Routes', () => {
     });
 
     expect(response.statusCode).toBe(402);
+    const body = JSON.parse(response.body) as { error: string };
+    expect(body.error).toBe('余额不足，请等待每日赠送或联系管理员充值');
     expect(fetchMock).not.toHaveBeenCalled();
     const usageResult = await pool.query('SELECT * FROM yiai_usage_records');
     expect(usageResult.rows).toHaveLength(0);
+  });
+
+  it('allows chat when gift balance is positive even if recharge is negative', async () => {
+    const stream = new ReadableStream({
+      start(controller) {
+        controller.enqueue(
+          new TextEncoder().encode(
+            'data: {"event":"message","answer":"hello"}\n\ndata: {"event":"message_end","conversation_id":"conv-gift","message_id":"msg-gift","task_id":"task-gift","metadata":{"usage":{"total_tokens":10}}}\n\n'
+          )
+        );
+        controller.close();
+      },
+    });
+    fetchMock.mockResolvedValueOnce(new Response(stream));
+
+    const app = await buildTestApp(pool);
+    const userId = await createTestUser(pool, 'gift_positive_user', 'user', 'testpass');
+    await pool.query(
+      'UPDATE token_accounts SET gift_tokens = 1000, recharge_tokens = -2000, last_gift_date = CURRENT_DATE WHERE user_id = $1',
+      [userId]
+    );
+
+    const token = await loginUser(app, 'gift_positive_user', 'testpass');
+
+    const response = await app.inject({
+      method: 'POST',
+      url: '/api/apps/zhouyi-divination/chat',
+      headers: { Authorization: `Bearer ${token}` },
+      payload: { query: 'hi' },
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+
+    const account = await pool.query<{ gift_tokens: number; recharge_tokens: number }>(
+      'SELECT gift_tokens, recharge_tokens FROM token_accounts WHERE user_id = $1',
+      [userId]
+    );
+    expect(account.rows[0].gift_tokens).toBe(990);
+    expect(account.rows[0].recharge_tokens).toBe(-2000);
+  });
+
+  it('allows chat and deducts from recharge when gift balance is not positive', async () => {
+    const stream = new ReadableStream({
+      start(controller) {
+        controller.enqueue(
+          new TextEncoder().encode(
+            'data: {"event":"message","answer":"hello"}\n\ndata: {"event":"message_end","conversation_id":"conv-recharge","message_id":"msg-recharge","task_id":"task-recharge","metadata":{"usage":{"total_tokens":10}}}\n\n'
+          )
+        );
+        controller.close();
+      },
+    });
+    fetchMock.mockResolvedValueOnce(new Response(stream));
+
+    const app = await buildTestApp(pool);
+    const userId = await createTestUser(pool, 'recharge_positive_user', 'user', 'testpass');
+    await pool.query(
+      'UPDATE token_accounts SET gift_tokens = -2000, recharge_tokens = 1000, last_gift_date = CURRENT_DATE WHERE user_id = $1',
+      [userId]
+    );
+
+    const token = await loginUser(app, 'recharge_positive_user', 'testpass');
+
+    const response = await app.inject({
+      method: 'POST',
+      url: '/api/apps/zhouyi-divination/chat',
+      headers: { Authorization: `Bearer ${token}` },
+      payload: { query: 'hi' },
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+
+    const account = await pool.query<{ gift_tokens: number; recharge_tokens: number }>(
+      'SELECT gift_tokens, recharge_tokens FROM token_accounts WHERE user_id = $1',
+      [userId]
+    );
+    expect(account.rows[0].gift_tokens).toBe(-2000);
+    expect(account.rows[0].recharge_tokens).toBe(990);
   });
 
   it('does not double deduct when duplicate message_end events arrive', async () => {

@@ -33,7 +33,6 @@ describe('AppHub', () => {
           JSON.stringify({
             gift_tokens: 100,
             recharge_tokens: 50,
-            total_tokens: 150,
             daily_gift_amount: 10,
             gift_tokens_max: 200,
             last_gift_date: null,
@@ -50,7 +49,7 @@ describe('AppHub', () => {
               id: 'app-1',
               slug: 'test-app',
               name: 'Test App',
-              description: null,
+              description: '测试应用说明',
               icon: null,
               icon_type: null,
               icon_url: null,
@@ -77,7 +76,7 @@ describe('AppHub', () => {
     localStorage.removeItem(TOKEN_KEY);
   });
 
-  it('renders app names from /api/apps', async () => {
+  it('renders app names and descriptions from /api/apps', async () => {
     render(<App />);
 
     await waitFor(() => {
@@ -85,6 +84,59 @@ describe('AppHub', () => {
     });
 
     expect(screen.getByText('Test App')).toBeInTheDocument();
+    expect(screen.getByText('测试应用说明')).toBeInTheDocument();
+  });
+
+  it('falls back to slug when app name is empty', async () => {
+    const originalMock = fetchMock.getMockImplementation();
+    fetchMock.mockImplementation((input, init) => {
+      const url = typeof input === 'string' ? input : input.url;
+      const method = init?.method ?? 'GET';
+      if (url.endsWith('/apps') && method === 'GET') {
+        return Promise.resolve(
+          new Response(
+            JSON.stringify([
+              {
+                id: 'app-2',
+                slug: 'fallback-slug',
+                name: '',
+                description: '说明',
+                icon: null,
+                icon_type: null,
+                icon_url: null,
+                icon_background: null,
+                sort_order: 1,
+                requires_new_conversation_inputs: false,
+              },
+            ])
+          )
+        );
+      }
+      return originalMock?.(input, init) ?? Promise.reject(new Error(`Unexpected fetch: ${method} ${url}`));
+    });
+
+    render(<App />);
+
+    await waitFor(() => {
+      expect(screen.getByText('应用中心')).toBeInTheDocument();
+    });
+
+    expect(screen.getByText('fallback-slug')).toBeInTheDocument();
+    expect(screen.getByText('说明')).toBeInTheDocument();
+  });
+
+  it('shows only gift and recharge balances, no total balance', async () => {
+    render(<App />);
+
+    await waitFor(() => {
+      expect(screen.getByText('应用中心')).toBeInTheDocument();
+    });
+
+    expect(screen.getByText('赠送余额 100')).toBeInTheDocument();
+    expect(screen.getByText('充值余额 50')).toBeInTheDocument();
+    expect(screen.queryByText(/可用/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/总余额/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/总计/)).not.toBeInTheDocument();
   });
 });
 
@@ -105,7 +157,6 @@ describe('AdminAppsTab', () => {
           JSON.stringify({
             gift_tokens: 100,
             recharge_tokens: 50,
-            total_tokens: 150,
             daily_gift_amount: 10,
             gift_tokens_max: 200,
             last_gift_date: null,
@@ -575,6 +626,13 @@ describe('ChatPage mobile drawer', () => {
       <ChatPage
         slug="test-app"
         user={{ id: 'user-1', username: 'tester', role: 'user' }}
+        account={{
+          gift_tokens: 100,
+          recharge_tokens: 50,
+          daily_gift_amount: 10,
+          gift_tokens_max: 200,
+          last_gift_date: null,
+        }}
         onBack={() => {}}
         onLogout={() => {}}
       />

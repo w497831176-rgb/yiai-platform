@@ -36,6 +36,7 @@ export async function createInMemoryPool(): Promise<Pool> {
     '003_create_token_accounts_and_ledger.sql',
     '004_add_yiai_app_icon_fields.sql',
     '005_add_yiai_app_icon_cache.sql',
+    '006_allow_negative_gift_tokens.sql',
   ];
 
   for (const file of files) {

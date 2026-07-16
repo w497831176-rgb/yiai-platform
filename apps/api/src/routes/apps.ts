@@ -249,10 +249,9 @@ export function appRoutes(fastify: FastifyInstance, options: { pool: Pool }): vo
       }
 
       const account = await getTokenAccount(pool, userId);
-      const totalAvailable = account.gift_tokens + account.recharge_tokens;
-      if (totalAvailable <= 0) {
+      if (account.gift_tokens <= 0 && account.recharge_tokens <= 0) {
         return await reply.status(402).send({
-          error: 'Token 余额不足，请联系管理员充值或等待每日赠送额度恢复',
+          error: '余额不足，请等待每日赠送或联系管理员充值',
         });
       }
 

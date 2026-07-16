@@ -60,11 +60,10 @@ describe('Token Account Service', () => {
     const account = JSON.parse(accountResponse.body) as {
       gift_tokens: number;
       recharge_tokens: number;
-      total_tokens: number;
     };
     expect(account.gift_tokens).toBe(50000);
     expect(account.recharge_tokens).toBe(0);
-    expect(account.total_tokens).toBe(50000);
+    expect('total_tokens' in account).toBe(false);
 
     const ledgerResponse = await app.inject({
       method: 'GET',
@@ -146,18 +145,97 @@ describe('Token Account Service', () => {
       url: '/api/token-account/ledger',
       headers: { Authorization: `Bearer ${token}` },
     });
-    const ledger = JSON.parse(ledgerResponse.body) as Array<{ entry_type: string; delta_tokens: number }>;
+    const ledger = JSON.parse(ledgerResponse.body) as Array<{ entry_type: string; delta_tokens: number; note: string }>;
     const gifts = ledger.filter((e) => e.entry_type === 'daily_gift');
     expect(gifts.reduce((sum, e) => sum + e.delta_tokens, 0)).toBe(60000);
   });
 
-  it('deducts usage from gift tokens first then recharge tokens', async () => {
+  it('caps daily gift at 100,000 when starting from 70,000', async () => {
+    const app = await buildApp(pool);
+    const userId = await createTestUser(pool, 'cap_user');
+
+    await pool.query(
+      "UPDATE token_accounts SET gift_tokens = 70000, last_gift_date = CURRENT_DATE - INTERVAL '1 day' WHERE user_id = $1",
+      [userId]
+    );
+
+    const token = await login(app, 'cap_user', 'secret123');
+
+    const accountResponse = await app.inject({
+      method: 'GET',
+      url: '/api/token-account',
+      headers: { Authorization: `Bearer ${token}` },
+    });
+
+    const account = JSON.parse(accountResponse.body) as { gift_tokens: number; recharge_tokens: number };
+    expect(account.gift_tokens).toBe(100000);
+    expect(account.recharge_tokens).toBe(0);
+  });
+
+  it('adds full daily gift to negative gift balance without zeroing first', async () => {
+    const app = await buildApp(pool);
+    const userId = await createTestUser(pool, 'negative_gift_user');
+
+    await pool.query(
+      "UPDATE token_accounts SET gift_tokens = -2000, recharge_tokens = 9999, last_gift_date = CURRENT_DATE - INTERVAL '1 day' WHERE user_id = $1",
+      [userId]
+    );
+
+    const token = await login(app, 'negative_gift_user', 'secret123');
+
+    const accountResponse = await app.inject({
+      method: 'GET',
+      url: '/api/token-account',
+      headers: { Authorization: `Bearer ${token}` },
+    });
+
+    const account = JSON.parse(accountResponse.body) as { gift_tokens: number; recharge_tokens: number };
+    expect(account.gift_tokens).toBe(48000);
+    expect(account.recharge_tokens).toBe(9999);
+  });
+
+  it('does not double grant daily gift on the same day after multiple reads', async () => {
+    const app = await buildApp(pool);
+    const userId = await createTestUser(pool, 'same_day_repeat_user');
+
+    await pool.query(
+      "UPDATE token_accounts SET gift_tokens = 0, last_gift_date = CURRENT_DATE - INTERVAL '1 day' WHERE user_id = $1",
+      [userId]
+    );
+
+    const token = await login(app, 'same_day_repeat_user', 'secret123');
+
+    for (let i = 0; i < 3; i++) {
+      await app.inject({
+        method: 'GET',
+        url: '/api/token-account',
+        headers: { Authorization: `Bearer ${token}` },
+      });
+    }
+
+    const accountResponse = await app.inject({
+      method: 'GET',
+      url: '/api/token-account',
+      headers: { Authorization: `Bearer ${token}` },
+    });
+
+    const account = JSON.parse(accountResponse.body) as { gift_tokens: number };
+    expect(account.gift_tokens).toBe(50000);
+
+    const ledger = await pool.query<{ entry_type: string }>(
+      'SELECT entry_type FROM token_ledger_entries WHERE user_id = $1 AND entry_type = $2',
+      [userId, 'daily_gift']
+    );
+    expect(ledger.rows).toHaveLength(1);
+  });
+
+  it('deducts all usage from gift tokens when gift is positive and allows gift to go negative', async () => {
     const userId = await createTestUser(pool, 'deduct_user');
     const appId = await createTestApp(pool);
 
-    // Gift 4,000, recharge 5,000
+    // 规则案例 1：gift=1000, recharge=8000, usage=3000 -> gift=-2000, recharge=8000
     await pool.query(
-      'UPDATE token_accounts SET gift_tokens = 4000, recharge_tokens = 5000, last_gift_date = CURRENT_DATE WHERE user_id = $1',
+      'UPDATE token_accounts SET gift_tokens = 1000, recharge_tokens = 8000, last_gift_date = CURRENT_DATE WHERE user_id = $1',
       [userId]
     );
 
@@ -168,9 +246,9 @@ describe('Token Account Service', () => {
       await client.query('BEGIN');
       const usageResult = await client.query<{ id: string }>(
         "INSERT INTO yiai_usage_records (user_id, app_id, conversation_id, message_id, task_id, total_tokens) VALUES ($1, $2, $3, $4, $5, $6) RETURNING id",
-        [userId, appId, 'conv-id', 'msg-1', 'task-1', 6000]
+        [userId, appId, 'conv-id', 'msg-1', 'task-1', 3000]
       );
-      await deductForUsage(client, userId, 6000, usageResult.rows[0].id, '测试消耗');
+      await deductForUsage(client, userId, 3000, usageResult.rows[0].id, '测试消耗');
       await client.query('COMMIT');
     } catch (error) {
       await client.query('ROLLBACK');
@@ -180,25 +258,25 @@ describe('Token Account Service', () => {
     }
 
     const result = await pool.query<{ gift_tokens: number; recharge_tokens: number }>('SELECT gift_tokens, recharge_tokens FROM token_accounts WHERE user_id = $1', [userId]);
-    expect(result.rows[0].gift_tokens).toBe(0);
-    expect(result.rows[0].recharge_tokens).toBe(3000);
+    expect(result.rows[0].gift_tokens).toBe(-2000);
+    expect(result.rows[0].recharge_tokens).toBe(8000);
 
     const ledger = await pool.query<{ bucket: string; delta_tokens: number }>(
       'SELECT bucket, delta_tokens FROM token_ledger_entries WHERE user_id = $1 ORDER BY created_at',
       [userId]
     );
-    expect(ledger.rows).toHaveLength(2);
+    expect(ledger.rows).toHaveLength(1);
     expect(ledger.rows[0].bucket).toBe('gift');
-    expect(ledger.rows[0].delta_tokens).toBe(-4000);
-    expect(ledger.rows[1].bucket).toBe('recharge');
-    expect(ledger.rows[1].delta_tokens).toBe(-2000);
+    expect(ledger.rows[0].delta_tokens).toBe(-3000);
   });
 
-  it('allows recharge_tokens to go negative when usage exceeds total balance', async () => {
+  it('deducts all usage from recharge tokens when gift is not positive and allows recharge to go negative', async () => {
     const userId = await createTestUser(pool, 'negative_user');
     const appId = await createTestApp(pool);
+
+    // 规则案例 2：gift=-2000, recharge=1000, usage=3000 -> gift=-2000, recharge=-2000
     await pool.query(
-      'UPDATE token_accounts SET gift_tokens = 1000, recharge_tokens = 500, last_gift_date = CURRENT_DATE WHERE user_id = $1',
+      'UPDATE token_accounts SET gift_tokens = -2000, recharge_tokens = 1000, last_gift_date = CURRENT_DATE WHERE user_id = $1',
       [userId]
     );
 
@@ -221,8 +299,16 @@ describe('Token Account Service', () => {
     }
 
     const result = await pool.query<{ gift_tokens: number; recharge_tokens: number }>('SELECT gift_tokens, recharge_tokens FROM token_accounts WHERE user_id = $1', [userId]);
-    expect(result.rows[0].gift_tokens).toBe(0);
-    expect(result.rows[0].recharge_tokens).toBe(-1500);
+    expect(result.rows[0].gift_tokens).toBe(-2000);
+    expect(result.rows[0].recharge_tokens).toBe(-2000);
+
+    const ledger = await pool.query<{ bucket: string; delta_tokens: number }>(
+      'SELECT bucket, delta_tokens FROM token_ledger_entries WHERE user_id = $1 ORDER BY created_at',
+      [userId]
+    );
+    expect(ledger.rows).toHaveLength(1);
+    expect(ledger.rows[0].bucket).toBe('recharge');
+    expect(ledger.rows[0].delta_tokens).toBe(-3000);
   });
 
   it('admin recharge increases recharge_tokens and writes admin_recharge ledger', async () => {

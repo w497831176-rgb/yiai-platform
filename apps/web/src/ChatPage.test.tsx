@@ -88,6 +88,13 @@ describe('ChatPage latest conversation inputs restore', () => {
       <ChatPage
         slug="shouyi-tcm-dual-ai"
         user={{ id: 'user-1', username: 'tester', role: 'user' }}
+        account={{
+          gift_tokens: 100,
+          recharge_tokens: 50,
+          daily_gift_amount: 10,
+          gift_tokens_max: 200,
+          last_gift_date: null,
+        }}
         onBack={() => {}}
         onLogout={() => {}}
       />

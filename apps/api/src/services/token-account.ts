@@ -74,6 +74,11 @@ function parseDateAtMidnightUTC(dateStr: string): Date {
   return new Date(Date.UTC(year, month - 1, day));
 }
 
+function addCalendarDays(dateStr: string, days: number): string {
+  const date = parseDateAtMidnightUTC(dateStr);
+  return getShanghaiDateString(new Date(date.getTime() + days * 86_400_000));
+}
+
 function diffCalendarDays(start: Date | string | null, end: Date | string): number {
   if (start === null) {
     return 1;
@@ -90,6 +95,22 @@ function diffCalendarDays(start: Date | string | null, end: Date | string): numb
   const endDate = parseDateAtMidnightUTC(endStr);
   const diff = Math.floor((endDate.getTime() - startDate.getTime()) / 86_400_000);
   return Math.max(0, diff);
+}
+
+function buildGrantDates(lastGiftDate: Date | string | null, todayStr: string): string[] {
+  if (lastGiftDate === null) {
+    return [todayStr];
+  }
+  const lastStr = toDateString(lastGiftDate);
+  if (lastStr === null) {
+    return [todayStr];
+  }
+  const days = diffCalendarDays(lastStr, todayStr);
+  const dates: string[] = [];
+  for (let d = 1; d <= days; d++) {
+    dates.push(addCalendarDays(lastStr, d));
+  }
+  return dates;
 }
 
 export async function getOrCreateTokenAccount(pool: Pool, userId: string): Promise<TokenAccount> {
@@ -128,11 +149,11 @@ export async function ensureDailyGift(pool: Pool, userId: string, now = new Date
 
     const lockedAccount = normalizeTokenAccount(lockResult.rows[0]);
     const lastGiftDate = lockedAccount.last_gift_date;
-    const daysToGrant = diffCalendarDays(lastGiftDate, todayStr);
+    const grantDates = buildGrantDates(lastGiftDate, todayStr);
 
     let currentGift = lockedAccount.gift_tokens;
 
-    for (let day = 0; day < daysToGrant; day++) {
+    for (const grantDateStr of grantDates) {
       const remainingCapacity = MAX_GIFT_TOKENS - currentGift;
       if (remainingCapacity <= 0) {
         break;
@@ -150,7 +171,7 @@ export async function ensureDailyGift(pool: Pool, userId: string, now = new Date
           INSERT INTO token_ledger_entries (user_id, delta_tokens, bucket, entry_type, note)
           VALUES ($1, $2, 'gift', 'daily_gift', $3)
         `,
-        [userId, delta, `每日赠送额度（${todayStr}）`]
+        [userId, delta, `每日赠送额度（${grantDateStr}）`]
       );
     }
 
@@ -232,36 +253,32 @@ export async function deductForUsage(
   }
 
   const account = normalizeTokenAccount(accountResult.rows[0]);
-  const giftDeduction = Math.min(totalTokens, account.gift_tokens);
-  const rechargeDeduction = totalTokens - giftDeduction;
 
-  const newGift = Math.max(0, account.gift_tokens - giftDeduction);
-  const newRecharge = account.recharge_tokens - rechargeDeduction;
+  // 单桶扣减：赠送余额大于 0 时全部从赠送扣（可扣至负数）；否则从充值扣（可扣至负数）
+  let newGift = account.gift_tokens;
+  let newRecharge = account.recharge_tokens;
+  let bucket: 'gift' | 'recharge';
+
+  if (account.gift_tokens > 0) {
+    bucket = 'gift';
+    newGift = account.gift_tokens - totalTokens;
+  } else {
+    bucket = 'recharge';
+    newRecharge = account.recharge_tokens - totalTokens;
+  }
 
   await client.query(
     'UPDATE token_accounts SET gift_tokens = $2, recharge_tokens = $3, updated_at = NOW() WHERE user_id = $1',
     [userId, newGift, newRecharge]
   );
 
-  if (giftDeduction > 0) {
-    await client.query(
-      `
-        INSERT INTO token_ledger_entries (user_id, delta_tokens, bucket, entry_type, usage_record_id, note)
-        VALUES ($1, $2, 'gift', 'usage', $3, $4)
-      `,
-      [userId, -giftDeduction, usageRecordId, note ?? '使用消耗']
-    );
-  }
-
-  if (rechargeDeduction > 0) {
-    await client.query(
-      `
-        INSERT INTO token_ledger_entries (user_id, delta_tokens, bucket, entry_type, usage_record_id, note)
-        VALUES ($1, $2, 'recharge', 'usage', $3, $4)
-      `,
-      [userId, -rechargeDeduction, usageRecordId, note ?? '使用消耗']
-    );
-  }
+  await client.query(
+    `
+      INSERT INTO token_ledger_entries (user_id, delta_tokens, bucket, entry_type, usage_record_id, note)
+      VALUES ($1, $2, $3, 'usage', $4, $5)
+    `,
+    [userId, -totalTokens, bucket, usageRecordId, note ?? '使用消耗']
+  );
 }
 
 export async function getTokenAccount(pool: Pool, userId: string, now = new Date()): Promise<TokenAccount> {

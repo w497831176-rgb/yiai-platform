@@ -17,7 +17,6 @@ export function tokenAccountRoutes(fastify: FastifyInstance, options: { pool: Po
     return {
       gift_tokens: account.gift_tokens,
       recharge_tokens: account.recharge_tokens,
-      total_tokens: account.gift_tokens + account.recharge_tokens,
       daily_gift_amount: DAILY_GIFT_AMOUNT,
       gift_tokens_max: MAX_GIFT_TOKENS,
       last_gift_date: account.last_gift_date,

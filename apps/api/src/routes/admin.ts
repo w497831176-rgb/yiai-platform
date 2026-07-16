@@ -111,7 +111,6 @@ export function adminRoutes(fastify: FastifyInstance, options: { pool: Pool }) {
       role: u.role,
       gift_tokens: u.gift_tokens,
       recharge_tokens: u.recharge_tokens,
-      total_tokens: u.gift_tokens + u.recharge_tokens,
       created_at: u.created_at,
     }));
   });
@@ -147,7 +146,6 @@ export function adminRoutes(fastify: FastifyInstance, options: { pool: Pool }) {
     return {
       gift_tokens: account.gift_tokens,
       recharge_tokens: account.recharge_tokens,
-      total_tokens: account.gift_tokens + account.recharge_tokens,
     };
   });
 

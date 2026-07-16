@@ -94,7 +94,6 @@ interface ChatMessage {
 interface TokenAccount {
   gift_tokens: number;
   recharge_tokens: number;
-  total_tokens: number;
   daily_gift_amount: number;
   gift_tokens_max: number;
   last_gift_date: string | null;
@@ -115,7 +114,6 @@ interface AdminUser {
   role: string;
   gift_tokens: number;
   recharge_tokens: number;
-  total_tokens: number;
   created_at: string;
 }
 
@@ -454,13 +452,12 @@ function ProfilePage({
 
 function TokenBadge({ account, onClick }: { account: TokenAccount | null; onClick?: () => void }) {
   if (!account) {
-    return <span className="token-badge loading">额度加载中...</span>;
+    return <span className="token-badge loading">余额加载中...</span>;
   }
   return (
     <button className="token-badge" onClick={onClick} type="button">
-      <span className="token-item gift">赠送 {account.gift_tokens.toLocaleString()}</span>
-      <span className="token-item recharge">充值 {account.recharge_tokens.toLocaleString()}</span>
-      <span className="token-item total">可用 {account.total_tokens.toLocaleString()}</span>
+      <span className="token-item gift">赠送余额 {account.gift_tokens.toLocaleString()}</span>
+      <span className="token-item recharge">充值余额 {account.recharge_tokens.toLocaleString()}</span>
     </button>
   );
 }
@@ -545,7 +542,7 @@ function AppHub({
         <h2>应用中心</h2>
         {account && (
           <p className="token-hint">
-            每日赠送 +{account.daily_gift_amount.toLocaleString()} Tokens，赠送额度最多累积至 {account.gift_tokens_max.toLocaleString()} Tokens
+            每日赠送 +{account.daily_gift_amount.toLocaleString()} Tokens，赠送余额最多累积至 {account.gift_tokens_max.toLocaleString()} Tokens
           </p>
         )}
         <div className="app-grid">
@@ -554,7 +551,7 @@ function AppHub({
               <div className="app-icon">
                 <AppIcon app={app} />
               </div>
-              <h3>{app.name}</h3>
+              <h3>{app.name || app.slug}</h3>
               {app.description && <p>{app.description}</p>}
             </button>
           ))}
@@ -658,12 +655,14 @@ function InputFormModal({
 export function ChatPage({
   slug,
   user: _user,
+  account,
   onBack,
   onLogout,
   onRefreshAccount,
 }: {
   slug: string;
   user: User;
+  account: TokenAccount | null;
   onBack: () => void;
   onLogout: () => void;
   onRefreshAccount?: () => void;
@@ -892,9 +891,15 @@ export function ChatPage({
     }
   };
 
+  const isBalanceInsufficient = account !== null && account.gift_tokens <= 0 && account.recharge_tokens <= 0;
+
   const handleSend = async (query: string) => {
     const text = query.trim();
     if ((!text && !pendingImage?.uploaded) || loading) {
+      return;
+    }
+    if (isBalanceInsufficient) {
+      setError('余额不足，请等待每日赠送或联系管理员充值');
       return;
     }
     setLoading(true);
@@ -1038,7 +1043,7 @@ export function ChatPage({
           <span className="chat-icon">
             <AppIcon app={bootstrap?.app} />
           </span>
-          <span>{bootstrap?.app.name ?? slug}</span>
+          <span>{bootstrap?.app.name || slug}</span>
         </div>
         <div className="chat-actions">
           <button className="secondary" onClick={startNewConversation} disabled={loading}>
@@ -1176,7 +1181,7 @@ export function ChatPage({
               onChange={(e) => {
                 setInput(e.target.value);
               }}
-              placeholder="输入问题..."
+              placeholder={isBalanceInsufficient ? '余额不足，请等待每日赠送或联系管理员充值' : '输入问题...'}
               disabled={loading || !!inputFormLoadError || (pendingImage !== null && !pendingImage.uploaded)}
             />
             <input
@@ -1201,6 +1206,7 @@ export function ChatPage({
               disabled={
                 loading ||
                 !!inputFormLoadError ||
+                isBalanceInsufficient ||
                 (!input.trim() && !pendingImage?.uploaded)
               }
             >
@@ -1235,7 +1241,7 @@ function formatEntryType(type: LedgerEntry['entry_type']): string {
 }
 
 function formatBucket(bucket: LedgerEntry['bucket']): string {
-  return bucket === 'gift' ? '赠送额度' : '充值额度';
+  return bucket === 'gift' ? '赠送余额' : '充值余额';
 }
 
 function formatDelta(delta: number): string {
@@ -1266,7 +1272,7 @@ function LedgerPage({ onBack }: { onBack: () => void }) {
         <button className="secondary" onClick={onBack}>
           ← 返回
         </button>
-        <h1>额度明细</h1>
+        <h1>余额明细</h1>
       </header>
       <main className="ledger-main">
         {error && <p className="error-banner">{error}</p>}
@@ -1278,7 +1284,7 @@ function LedgerPage({ onBack }: { onBack: () => void }) {
               <tr>
                 <th>时间</th>
                 <th>类型</th>
-                <th>来源额度</th>
+                <th>来源余额</th>
                 <th>变动 Token</th>
                 <th>备注</th>
               </tr>
@@ -1345,7 +1351,7 @@ function AdminUsersTab() {
     if (!rechargeUser) return;
     const amount = parseInt(rechargeAmount, 10);
     if (!Number.isFinite(amount) || amount <= 0) {
-      setError('充值额度必须为正整数');
+      setError('充值余额必须为正整数');
       return;
     }
     void (async () => {
@@ -1376,9 +1382,8 @@ function AdminUsersTab() {
             <tr>
               <th>用户名</th>
               <th>角色</th>
-              <th>赠送额度</th>
-              <th>充值额度</th>
-              <th>总额度</th>
+              <th>赠送余额</th>
+              <th>充值余额</th>
               <th>注册时间</th>
               <th>操作</th>
             </tr>
@@ -1390,7 +1395,6 @@ function AdminUsersTab() {
                 <td>{u.role === 'admin' ? '管理员' : '用户'}</td>
                 <td>{u.gift_tokens.toLocaleString()}</td>
                 <td>{u.recharge_tokens.toLocaleString()}</td>
-                <td>{u.total_tokens.toLocaleString()}</td>
                 <td>{new Date(u.created_at).toLocaleString('zh-CN')}</td>
                 <td>
                   <button className="secondary" onClick={() => { void openLedger(u.id); }}>
@@ -1417,7 +1421,7 @@ function AdminUsersTab() {
                   <tr>
                     <th>时间</th>
                     <th>类型</th>
-                    <th>来源额度</th>
+                    <th>来源余额</th>
                     <th>变动 Token</th>
                     <th>备注</th>
                   </tr>
@@ -1447,7 +1451,7 @@ function AdminUsersTab() {
       {rechargeUser && (
         <div className="modal-overlay" onClick={() => { setRechargeUser(null); }}>
           <div className="modal" onClick={(e) => { e.stopPropagation(); }}>
-            <h3>为 {rechargeUser.username} 充值额度</h3>
+            <h3>为 {rechargeUser.username} 充值余额</h3>
             <form onSubmit={handleRecharge}>
               <label>
                 充值 Token 数量（正整数）
@@ -1827,7 +1831,7 @@ function AdminPage({ onBack }: { onBack: () => void }) {
       </header>
       <nav className="admin-nav">
         <button className={tab === 'users' ? 'active' : ''} onClick={() => { setTab('users'); }}>
-          用户与额度
+          用户与余额
         </button>
         <button className={tab === 'apps' ? 'active' : ''} onClick={() => { setTab('apps'); }}>
           应用管理
@@ -1944,6 +1948,7 @@ function App() {
         <ChatPage
           slug={view.slug}
           user={user}
+          account={account}
           onBack={() => { setView({ type: 'hub' }); }}
           onLogout={handleLogout}
           onRefreshAccount={() => { void refreshAccount(); }}
