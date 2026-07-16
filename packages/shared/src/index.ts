@@ -50,6 +50,9 @@ export interface YiaiApp {
   name: string;
   description: string | null;
   icon: string | null;
+  icon_type: 'image' | 'emoji' | null;
+  icon_url: string | null;
+  icon_background: string | null;
   sort_order: number;
   requires_new_conversation_inputs: boolean;
   created_at: string;
@@ -107,10 +110,23 @@ export interface YiaiMessage {
   };
 }
 
+export interface ChatRequestFile {
+  type: 'image';
+  transfer_method: 'local_file';
+  upload_file_id: string;
+}
+
 export interface ChatRequest {
   query: string;
   conversation_id?: string;
   inputs?: Record<string, unknown>;
+  files?: ChatRequestFile[];
+}
+
+export interface UploadedFile {
+  id: string;
+  type: string;
+  url: string;
 }
 
 export interface ChatStreamEvent {

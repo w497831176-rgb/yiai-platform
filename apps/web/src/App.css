@@ -318,6 +318,84 @@ button:disabled {
   background: #eef4fb;
 }
 
+.chat-sidebar li {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+}
+
+.chat-sidebar li .conversation-name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.chat-sidebar li .delete-conversation {
+  padding: 0.25rem 0.5rem;
+  font-size: 0.75rem;
+  opacity: 0;
+  transition: opacity 0.15s ease;
+}
+
+.chat-sidebar li:hover .delete-conversation,
+.chat-sidebar li.active .delete-conversation {
+  opacity: 1;
+}
+
+.chat-sidebar-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 1rem;
+}
+
+.chat-sidebar-header h4 {
+  margin: 0;
+}
+
+.mobile-history-toggle,
+.drawer-close {
+  display: none;
+}
+
+.chat-sidebar-backdrop {
+  display: none;
+}
+
+.input-area {
+  background: white;
+  border-top: 1px solid #e0e0e0;
+}
+
+.pending-image {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  padding: 0.5rem 1rem;
+  border-bottom: 1px solid #f0f0f0;
+}
+
+.pending-image img {
+  width: 3rem;
+  height: 3rem;
+  object-fit: cover;
+  border-radius: 8px;
+}
+
+.uploading-hint {
+  font-size: 0.875rem;
+  color: #666;
+}
+
+.pending-image .remove-image {
+  margin-left: auto;
+  padding: 0.25rem 0.5rem;
+  font-size: 0.75rem;
+}
+
 .chat-main {
   display: flex;
   flex-direction: column;
@@ -651,6 +729,10 @@ button:disabled {
   font-size: 0.875rem;
 }
 
+.admin-actions {
+  margin-bottom: 1rem;
+}
+
 .modal.wide {
   max-width: 640px;
 }
@@ -695,13 +777,49 @@ label.checkbox input {
 @media (max-width: 640px) {
   .chat-page {
     grid-template-columns: 1fr;
-    grid-template-rows: auto auto 1fr;
+    grid-template-rows: auto 1fr;
   }
 
   .chat-sidebar {
+    display: none;
+    position: fixed;
+    top: 3.5rem;
+    left: 0;
+    right: 0;
+    max-height: 45vh;
     border-right: none;
     border-bottom: 1px solid #e0e0e0;
-    max-height: 140px;
+    z-index: 60;
+    box-shadow: 0 8px 24px rgba(0, 0, 0, 0.1);
+  }
+
+  .chat-sidebar.open {
+    display: block;
+  }
+
+  .chat-sidebar-backdrop {
+    display: block;
+    position: fixed;
+    inset: 0;
+    background: rgba(0, 0, 0, 0.25);
+    z-index: 55;
+  }
+
+  .mobile-history-toggle,
+  .drawer-close {
+    display: inline-flex;
+  }
+
+  .chat-sidebar li .delete-conversation {
+    opacity: 1;
+  }
+
+  .chat-title {
+    display: none;
+  }
+
+  .chat-actions {
+    flex-shrink: 0;
   }
 
   .app-grid {

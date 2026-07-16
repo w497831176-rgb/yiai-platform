@@ -1,6 +1,10 @@
-import { describe, it, expect } from 'vitest';
-import { render, screen } from '@testing-library/react';
-import App from './App';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { render, screen, waitFor, fireEvent } from '@testing-library/react';
+import App, { AppIcon, ChatPage } from './App';
+
+const TOKEN_KEY = 'yiai_token';
+
+type FetchFn = (input: string | Request, init?: RequestInit) => Promise<Response>;
 
 describe('App', () => {
   it('renders the login page by default', () => {
@@ -9,5 +13,299 @@ describe('App', () => {
     expect(screen.getByRole('heading', { name: '登录' })).toBeInTheDocument();
     expect(screen.getByRole('button', { name: '登录' })).toBeInTheDocument();
     expect(screen.getByRole('button', { name: '注册' })).toBeInTheDocument();
+  });
+});
+
+describe('AdminAppsTab', () => {
+  const fetchMock = vi.fn<FetchFn>((input, init) => {
+    const url = typeof input === 'string' ? input : input.url;
+    const method = init?.method ?? 'GET';
+
+    if (url.endsWith('/auth/me')) {
+      return Promise.resolve(
+        new Response(JSON.stringify({ id: 'admin-1', username: 'admin', role: 'admin' }))
+      );
+    }
+
+    if (url.endsWith('/token-account')) {
+      return Promise.resolve(
+        new Response(
+          JSON.stringify({
+            gift_tokens: 100,
+            recharge_tokens: 50,
+            total_tokens: 150,
+            daily_gift_amount: 10,
+            gift_tokens_max: 200,
+            last_gift_date: null,
+          })
+        )
+      );
+    }
+
+    if (url.endsWith('/apps') && method === 'GET') {
+      return Promise.resolve(
+        new Response(
+          JSON.stringify([
+            {
+              id: 'app-1',
+              slug: 'test-app',
+              name: 'Test App',
+              description: null,
+              icon: null,
+              icon_type: null,
+              icon_url: null,
+              icon_background: null,
+              sort_order: 1,
+              requires_new_conversation_inputs: false,
+            },
+          ])
+        )
+      );
+    }
+
+    if (url.endsWith('/admin/apps') && method === 'GET') {
+      return Promise.resolve(
+        new Response(
+          JSON.stringify([
+            {
+              id: 'app-1',
+              slug: 'test-app',
+              name: 'Test App',
+              description: null,
+              icon: null,
+              icon_type: null,
+              icon_url: null,
+              icon_background: null,
+              api_base_url: 'https://yiai.example.com/v1',
+              api_key_configured: true,
+              enabled: true,
+              sort_order: 1,
+              requires_new_conversation_inputs: false,
+            },
+          ])
+        )
+      );
+    }
+
+    if (url.endsWith('/admin/apps') && method === 'POST') {
+      return Promise.resolve(
+        new Response(
+          JSON.stringify({
+            id: 'app-new',
+            slug: 'new-app',
+            name: 'New App',
+          })
+        )
+      );
+    }
+
+    return Promise.reject(new Error(`Unexpected fetch: ${method} ${url}`));
+  });
+
+  beforeEach(() => {
+    fetchMock.mockClear();
+    vi.stubGlobal('fetch', fetchMock);
+    localStorage.setItem(TOKEN_KEY, 'admin-token');
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    localStorage.removeItem(TOKEN_KEY);
+  });
+
+  it('has "新增 Chatflow 应用" button and submits correct body', async () => {
+    render(<App />);
+
+    await waitFor(() => {
+      expect(screen.getByText('应用中心')).toBeInTheDocument();
+    });
+
+    fireEvent.click(screen.getByRole('button', { name: '管理后台' }));
+
+    await waitFor(() => {
+      expect(screen.getByRole('button', { name: '应用管理' })).toBeInTheDocument();
+    });
+
+    fireEvent.click(screen.getByRole('button', { name: '应用管理' }));
+
+    await waitFor(() => {
+      expect(screen.getByRole('button', { name: '新增 Chatflow 应用' })).toBeInTheDocument();
+    });
+
+    fireEvent.click(screen.getByRole('button', { name: '新增 Chatflow 应用' }));
+
+    await waitFor(() => {
+      expect(screen.getByRole('heading', { name: '新增 Chatflow 应用' })).toBeInTheDocument();
+    });
+
+    fireEvent.change(screen.getByLabelText('应用标识 slug'), { target: { value: 'new-app' } });
+    fireEvent.change(screen.getByLabelText('YIAI Chatflow API Base URL'), {
+      target: { value: 'https://yiai.example.com/v1' },
+    });
+    fireEvent.change(screen.getByLabelText('YIAI Chatflow API Key'), {
+      target: { value: 'secret-api-key' },
+    });
+    fireEvent.change(screen.getByLabelText('排序'), { target: { value: '5' } });
+
+    fireEvent.click(screen.getByRole('button', { name: '保存' }));
+
+    await waitFor(() => {
+      const createCall = fetchMock.mock.calls.find(([url, init]) => {
+        const callUrl = typeof url === 'string' ? url : url.url;
+        const callMethod = init?.method ?? 'GET';
+        return callUrl.endsWith('/admin/apps') && callMethod === 'POST';
+      });
+      expect(createCall).toBeDefined();
+      if (!createCall) return;
+      const [, init] = createCall;
+      const body = JSON.parse(init?.body as string) as Record<string, unknown>;
+      expect(body.slug).toBe('new-app');
+      expect(body.api_base_url).toBe('https://yiai.example.com/v1');
+      expect(body.api_key).toBe('secret-api-key');
+      expect(body.sort_order).toBe(5);
+      expect(body.enabled).toBe(true);
+      expect(body.requires_new_conversation_inputs).toBe(false);
+    });
+  });
+
+  it('shows sync button for existing apps', async () => {
+    render(<App />);
+
+    await waitFor(() => {
+      expect(screen.getByText('应用中心')).toBeInTheDocument();
+    });
+
+    fireEvent.click(screen.getByRole('button', { name: '管理后台' }));
+
+    await waitFor(() => {
+      expect(screen.getByRole('button', { name: '应用管理' })).toBeInTheDocument();
+    });
+
+    fireEvent.click(screen.getByRole('button', { name: '应用管理' }));
+
+    await waitFor(() => {
+      expect(screen.getByRole('button', { name: '同步 YIAI 信息' })).toBeInTheDocument();
+    });
+  });
+});
+
+describe('AppIcon', () => {
+  it('renders image from icon_url and does not render UUID text', () => {
+    const { container } = render(
+      <AppIcon
+        app={{
+          icon_type: 'image',
+          icon: '550e8400-e29b-41d4-a716-446655440000',
+          icon_url: 'https://example.com/icon.png',
+          icon_background: null,
+        }}
+      />
+    );
+
+    const img = container.querySelector('img');
+    expect(img).toBeInTheDocument();
+    expect(img?.getAttribute('src')).toBe('https://example.com/icon.png');
+    expect(container.textContent).not.toContain('550e8400');
+  });
+
+  it('renders emoji text when icon_type is emoji', () => {
+    render(<AppIcon app={{ icon_type: 'emoji', icon: '🤖', icon_url: null, icon_background: null }} />);
+    expect(screen.getByText('🤖')).toBeInTheDocument();
+  });
+
+  it('renders placeholder for unknown icon types', () => {
+    const { container } = render(
+      <AppIcon app={{ icon_type: null, icon: '550e8400-e29b-41d4-a716-446655440000', icon_url: null, icon_background: null }} />
+    );
+    expect(container.querySelector('.app-icon-placeholder')).toBeInTheDocument();
+    expect(container.textContent).not.toContain('550e8400');
+  });
+});
+
+describe('ChatPage mobile drawer', () => {
+  const fetchMock = vi.fn<FetchFn>((input) => {
+    const url = typeof input === 'string' ? input : input.url;
+
+    if (url.endsWith('/bootstrap')) {
+      return Promise.resolve(
+        new Response(
+          JSON.stringify({
+            app: {
+              id: 'app-1',
+              slug: 'test-app',
+              name: 'Test App',
+              description: null,
+              icon: null,
+              icon_type: null,
+              icon_url: null,
+              icon_background: null,
+              sort_order: 1,
+              requires_new_conversation_inputs: false,
+              created_at: '',
+              updated_at: '',
+            },
+            opening_statement: null,
+            suggested_questions: [],
+            user_input_form: null,
+          })
+        )
+      );
+    }
+
+    if (url.endsWith('/conversations')) {
+      return Promise.resolve(
+        new Response(
+          JSON.stringify([
+            {
+              id: 'conv-1',
+              name: '历史会话',
+              inputs: {},
+              status: 'normal',
+              updated_at: 1,
+              created_at: 1,
+            },
+          ])
+        )
+      );
+    }
+
+    if (url.includes('/conversations/') && url.endsWith('/messages')) {
+      return Promise.resolve(new Response(JSON.stringify([])));
+    }
+
+    return Promise.reject(new Error(`Unexpected fetch: ${url}`));
+  });
+
+  beforeEach(() => {
+    fetchMock.mockClear();
+    vi.stubGlobal('fetch', fetchMock);
+    localStorage.setItem(TOKEN_KEY, 'test-token');
+    window.HTMLElement.prototype.scrollIntoView = vi.fn();
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    localStorage.removeItem(TOKEN_KEY);
+  });
+
+  it('drawer is closed by default and toggles open', async () => {
+    render(
+      <ChatPage
+        slug="test-app"
+        user={{ id: 'user-1', username: 'tester', role: 'user' }}
+        onBack={() => {}}
+        onLogout={() => {}}
+      />
+    );
+
+    await waitFor(() => {
+      expect(screen.getByText('历史会话（1）')).toBeInTheDocument();
+    });
+
+    const sidebar = screen.getByTestId('chat-sidebar');
+    expect(sidebar.classList.contains('open')).toBe(false);
+
+    fireEvent.click(screen.getByText('历史会话（1）'));
+    expect(sidebar.classList.contains('open')).toBe(true);
   });
 });

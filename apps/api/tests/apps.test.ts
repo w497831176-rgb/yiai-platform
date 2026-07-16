@@ -5,7 +5,7 @@ import { appRoutes } from '../src/routes/apps.js';
 import { authRoutes } from '../src/routes/auth.js';
 import { tokenAccountRoutes } from '../src/routes/token-account.js';
 import { createInMemoryPool, createTestApp, createTestUser } from './helpers/in-memory-db.js';
-import type { YiaiApp, AuthResponse, AppBootstrap, YiaiConversation, YiaiMessage } from '@yiai/shared';
+import type { YiaiApp, AuthResponse, AppBootstrap, YiaiConversation, YiaiMessage, UploadedFile } from '@yiai/shared';
 
 vi.mock('../src/auth/password.js', () => ({
   hashPassword: vi.fn((password: string) => `hashed-${password}`),
@@ -28,6 +28,24 @@ async function loginUser(app: FastifyInstance, username: string, password: strin
   });
   const body = JSON.parse(response.body) as AuthResponse;
   return body.token;
+}
+
+function buildMultipartBody(
+  parts: Array<{ name: string; filename?: string; contentType: string; data: Buffer | string }>,
+  boundary: string
+): Buffer {
+  let body = Buffer.alloc(0);
+  for (const part of parts) {
+    let header = `--${boundary}\r\nContent-Disposition: form-data; name="${part.name}"`;
+    if (part.filename) {
+      header += `; filename="${part.filename}"`;
+    }
+    header += `\r\nContent-Type: ${part.contentType}\r\n\r\n`;
+    const data = Buffer.isBuffer(part.data) ? part.data : Buffer.from(part.data);
+    body = Buffer.concat([body, Buffer.from(header), data, Buffer.from('\r\n')]);
+  }
+  body = Buffer.concat([body, Buffer.from(`--${boundary}--\r\n`)]);
+  return body;
 }
 
 describe('App Routes', () => {
@@ -72,7 +90,9 @@ describe('App Routes', () => {
       { method: 'GET' as const, url: '/api/apps' },
       { method: 'GET' as const, url: '/api/apps/zhouyi-divination/bootstrap' },
       { method: 'GET' as const, url: '/api/apps/zhouyi-divination/conversations' },
+      { method: 'DELETE' as const, url: '/api/apps/zhouyi-divination/conversations/conv-1' },
       { method: 'GET' as const, url: '/api/apps/zhouyi-divination/conversations/conv-1/messages' },
+      { method: 'POST' as const, url: '/api/apps/zhouyi-divination/files' },
       { method: 'POST' as const, url: '/api/apps/zhouyi-divination/chat', payload: { query: 'hi' } },
     ];
 
@@ -121,11 +141,14 @@ describe('App Routes', () => {
     expect(zhouyi?.name).toBe('周易占卦');
     expect(zhouyi?.description).toBe('数据库描述');
     expect(zhouyi?.icon).toBe('🔮');
+    expect(zhouyi?.icon_type).toBe('emoji');
+    expect(zhouyi?.icon_url).toBeNull();
 
     const dunjiazi = body.find((a) => a.slug === 'dunjiazi');
     expect(dunjiazi?.name).toBe('遁甲子');
     expect(dunjiazi?.description).toBeNull();
     expect(dunjiazi?.icon).toBeNull();
+    expect(dunjiazi?.icon_type).toBeNull();
   });
 
   it('returns bootstrap without api_key', async () => {
@@ -267,6 +290,42 @@ describe('App Routes', () => {
     expect(ledgerResult.rows).toHaveLength(1);
     expect(ledgerResult.rows[0].bucket).toBe('gift');
     expect(ledgerResult.rows[0].delta_tokens).toBe(-15);
+  });
+
+  it('proxies chat with files in upstream body', async () => {
+    const stream = new ReadableStream({
+      start(controller) {
+        controller.enqueue(
+          new TextEncoder().encode(
+            'data: {"event":"message","answer":"Hello"}\n\ndata: {"event":"message_end","message_id":"msg-files","metadata":{"usage":{"total_tokens":5}}}\n\n'
+          )
+        );
+        controller.close();
+      },
+    });
+
+    fetchMock.mockResolvedValueOnce(new Response(stream));
+
+    const app = await buildTestApp(pool);
+    const token = await loginUser(app, 'test_user', 'testpass');
+
+    const response = await app.inject({
+      method: 'POST',
+      url: '/api/apps/zhouyi-divination/chat',
+      headers: { Authorization: `Bearer ${token}` },
+      payload: {
+        query: 'describe image',
+        files: [{ type: 'image', transfer_method: 'local_file', upload_file_id: 'file-1' }],
+      },
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    const init = fetchMock.mock.calls[0][1] as { method: string; body: string } | undefined;
+    const upstreamBody = JSON.parse(init?.body ?? '{}') as { files: unknown[] };
+    expect(upstreamBody.files).toEqual([
+      { type: 'image', transfer_method: 'local_file', upload_file_id: 'file-1' },
+    ]);
   });
 
   it('rejects chat when user has no token balance', async () => {
@@ -412,5 +471,146 @@ describe('App Routes', () => {
     expect(chatResponse.statusCode).toBe(400);
     const chatBody = JSON.parse(chatResponse.body) as { error: string };
     expect(chatBody.error).toContain('姓名');
+  });
+
+  it('rejects non-image file uploads', async () => {
+    const app = await buildTestApp(pool);
+    const token = await loginUser(app, 'test_user', 'testpass');
+    const boundary = '----FormBoundary';
+    const body = buildMultipartBody(
+      [{ name: 'file', filename: 'doc.pdf', contentType: 'application/pdf', data: Buffer.from('%PDF') }],
+      boundary
+    );
+
+    const response = await app.inject({
+      method: 'POST',
+      url: '/api/apps/zhouyi-divination/files',
+      headers: {
+        Authorization: `Bearer ${token}`,
+        'Content-Type': `multipart/form-data; boundary=${boundary}`,
+      },
+      payload: body,
+    });
+
+    expect(response.statusCode).toBe(400);
+    const result = JSON.parse(response.body) as { error: string };
+    expect(result.error).toBe('仅支持图片文件');
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it('rejects oversized image uploads', async () => {
+    const app = await buildTestApp(pool);
+    const token = await loginUser(app, 'test_user', 'testpass');
+    const boundary = '----FormBoundary';
+    const body = buildMultipartBody(
+      [{ name: 'file', filename: 'big.png', contentType: 'image/png', data: Buffer.alloc(10 * 1024 * 1024 + 1) }],
+      boundary
+    );
+
+    const response = await app.inject({
+      method: 'POST',
+      url: '/api/apps/zhouyi-divination/files',
+      headers: {
+        Authorization: `Bearer ${token}`,
+        'Content-Type': `multipart/form-data; boundary=${boundary}`,
+      },
+      payload: body,
+    });
+
+    expect(response.statusCode).toBe(400);
+    const result = JSON.parse(response.body) as { error: string };
+    expect(result.error).toBe('图片大小超过 10MB');
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it('uploads image to upstream and returns safe file object', async () => {
+    fetchMock.mockResolvedValueOnce(
+      new Response(JSON.stringify({ id: 'file-upstream-1', url: 'https://cdn.example.com/file.png', name: 'file.png' }))
+    );
+
+    const app = await buildTestApp(pool);
+    const token = await loginUser(app, 'test_user', 'testpass');
+    const boundary = '----FormBoundary';
+    const body = buildMultipartBody(
+      [{ name: 'file', filename: 'avatar.png', contentType: 'image/png', data: Buffer.from('fake-image') }],
+      boundary
+    );
+
+    const response = await app.inject({
+      method: 'POST',
+      url: '/api/apps/zhouyi-divination/files',
+      headers: {
+        Authorization: `Bearer ${token}`,
+        'Content-Type': `multipart/form-data; boundary=${boundary}`,
+      },
+      payload: body,
+    });
+
+    expect(response.statusCode).toBe(200);
+    const result = JSON.parse(response.body) as UploadedFile & { name?: string };
+    expect(result.id).toBe('file-upstream-1');
+    expect(result.type).toBe('image');
+    expect(result.url).toBe('https://cdn.example.com/file.png');
+    expect(result.name).toBe('file.png');
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    const [url, init] = fetchMock.mock.calls[0];
+    expect(url).toContain('/files?user=yiai-platform-');
+    expect((init as { method: string }).method).toBe('POST');
+    expect((init as { headers: Record<string, string> }).headers.Authorization).toBe('Bearer test-key');
+  });
+
+  it('deletes conversation by forwarding DELETE to upstream', async () => {
+    fetchMock.mockResolvedValueOnce(new Response(null, { status: 204 }));
+
+    const app = await buildTestApp(pool);
+    const token = await loginUser(app, 'test_user', 'testpass');
+
+    const response = await app.inject({
+      method: 'DELETE',
+      url: '/api/apps/zhouyi-divination/conversations/conv-1',
+      headers: { Authorization: `Bearer ${token}` },
+    });
+
+    expect(response.statusCode).toBe(204);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    const [url, init] = fetchMock.mock.calls[0];
+    expect(url).toMatch(/^https:\/\/yiai\.example\.com\/v1\/conversations\/conv-1\?user=yiai-platform-[\w-]+$/);
+    expect((init as { method: string }).method).toBe('DELETE');
+    expect((init as { headers: Record<string, string> }).headers.Authorization).toBe('Bearer test-key');
+  });
+
+  it('rejects deleting conversation belonging to another user', async () => {
+    const app = await buildTestApp(pool);
+    const otherUserId = await createTestUser(pool, 'other_user', 'user', 'testpass');
+
+    fetchMock.mockImplementation((url) => {
+      if (typeof url === 'string' && url.includes(`yiai-platform-${otherUserId}`)) {
+        // 模拟上游根据 user 参数区分所有权：other_user 无权删除 test_user 的会话
+        return Promise.resolve(new Response(null, { status: 404 }));
+      }
+      return Promise.resolve(new Response(null, { status: 204 }));
+    });
+
+    const otherToken = await loginUser(app, 'other_user', 'testpass');
+
+    const response = await app.inject({
+      method: 'DELETE',
+      url: '/api/apps/zhouyi-divination/conversations/conv-owned-by-test-user',
+      headers: { Authorization: `Bearer ${otherToken}` },
+    });
+
+    expect(response.statusCode).toBe(502);
+    const result = JSON.parse(response.body) as { error: string };
+    expect(result.error).toContain('删除会话失败');
+
+    // 确保删除操作确实被转发到上游，而不是在本地被静默拒绝
+    const forwardedCalls = fetchMock.mock.calls.filter((call) => {
+      const callUrl = call[0] as string;
+      return callUrl.includes('yiai-platform-');
+    });
+    expect(forwardedCalls).toHaveLength(1);
+    const otherUserUrl = `yiai-platform-${otherUserId}`;
+    expect((forwardedCalls[0][0] as string).includes(otherUserUrl)).toBe(true);
   });
 });

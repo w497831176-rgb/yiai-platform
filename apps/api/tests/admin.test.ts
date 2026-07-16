@@ -63,7 +63,7 @@ describe('Admin Routes', () => {
     pool = await createInMemoryPool();
   });
 
-  it('does not expose api_key in admin app list', async () => {
+  it('does not expose api_key in admin app list and includes icon fields', async () => {
     const app = await buildApp(pool);
     await createTestUser(pool, 'admin_user', 'admin', 'testpass');
     await createTestApp(pool, { slug: 'test-app', name: 'Test App', api_key: 'secret-key' });
@@ -81,6 +81,9 @@ describe('Admin Routes', () => {
     expect(body).toHaveLength(1);
     expect(body[0]).not.toHaveProperty('api_key');
     expect(body[0].api_key_configured).toBe(true);
+    expect(body[0]).toHaveProperty('icon_type');
+    expect(body[0]).toHaveProperty('icon_url');
+    expect(body[0]).toHaveProperty('icon_background');
   });
 
   it('creates Chatflow app after fetching upstream metadata and hides api_key', async () => {
@@ -300,6 +303,49 @@ describe('Admin Routes', () => {
     expect(syncResponse.statusCode).toBe(200);
     const synced = JSON.parse(syncResponse.body) as Record<string, unknown>;
     expect(synced.requires_new_conversation_inputs).toBe(true);
+  });
+
+  it('syncs image icon_url from upstream site', async () => {
+    const app = await buildApp(pool);
+    await createTestUser(pool, 'admin_user', 'admin', 'testpass');
+    const appId = await createTestApp(pool, {
+      slug: 'image-icon-app',
+      name: 'Image App',
+      api_key: 'key',
+      icon_type: 'image',
+      icon: 'app-icon-uuid',
+    });
+
+    fetchMock
+      .mockResolvedValueOnce(new Response(JSON.stringify({ name: 'Image App' })))
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            title: 'Image App',
+            icon_type: 'image',
+            icon: 'app-icon-uuid',
+            icon_url: 'https://cdn.example.com/app-icon.png',
+            icon_background: '#FFFFFF',
+          })
+        )
+      )
+      .mockResolvedValueOnce(new Response(JSON.stringify({ user_input_form: [] })));
+
+    const token = await login(app, 'admin_user', 'testpass');
+
+    const syncResponse = await app.inject({
+      method: 'POST',
+      url: `/api/admin/apps/${appId}/sync`,
+      headers: { Authorization: `Bearer ${token}` },
+    });
+
+    expect(syncResponse.statusCode).toBe(200);
+    const synced = JSON.parse(syncResponse.body) as Record<string, unknown>;
+    expect(synced).not.toHaveProperty('api_key');
+    expect(synced.icon_type).toBe('image');
+    expect(synced.icon).toBeNull();
+    expect(synced.icon_url).toBe('https://cdn.example.com/app-icon.png');
+    expect(synced.icon_background).toBe('#FFFFFF');
   });
 
   it('prevents duplicate slug when creating apps', async () => {

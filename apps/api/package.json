@@ -12,6 +12,7 @@
     "test": "vitest run"
   },
   "dependencies": {
+    "@fastify/multipart": "^10.1.0",
     "@yiai/shared": "*",
     "bcryptjs": "^3.0.3",
     "dotenv": "^16.4.7",

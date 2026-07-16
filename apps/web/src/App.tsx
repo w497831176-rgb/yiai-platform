@@ -2,7 +2,11 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import './App.css';
 import { readSSEStream } from './sse';
 import { startChatStream, type ChatRequestBody } from './chat';
-import { stripThinkContent } from './utils/message';
+import {
+  stripThinkContent,
+  normalizeYiaiTimestamp,
+  formatShanghaiTime,
+} from './utils/message';
 
 interface User {
   id: string;
@@ -21,6 +25,9 @@ interface YiaiApp {
   name: string;
   description: string | null;
   icon: string | null;
+  icon_type: 'emoji' | 'image' | null;
+  icon_url: string | null;
+  icon_background: string | null;
   sort_order: number;
   requires_new_conversation_inputs: boolean;
 }
@@ -118,6 +125,9 @@ interface AdminApp {
   name: string;
   description: string | null;
   icon: string | null;
+  icon_type: 'emoji' | 'image' | null;
+  icon_url: string | null;
+  icon_background: string | null;
   api_base_url: string;
   api_key_configured: boolean;
   enabled: boolean;
@@ -136,27 +146,14 @@ type View =
 
 const TOKEN_KEY = 'yiai_token';
 
-function formatShanghaiTime(timestamp: number): string {
-  return new Intl.DateTimeFormat('en-CA', {
-    timeZone: 'Asia/Shanghai',
-    year: 'numeric',
-    month: '2-digit',
-    day: '2-digit',
-    hour: '2-digit',
-    minute: '2-digit',
-    hour12: false,
-  })
-    .format(new Date(timestamp))
-    .replace(', ', ' ');
-}
-
 function formatMessageMeta(msg: ChatMessage): string {
   const parts: string[] = [];
   if (msg.usage !== undefined) {
     parts.push(`本次消耗：${msg.usage.toLocaleString()} Tokens`);
   }
-  if (msg.createdAt !== undefined) {
-    parts.push(formatShanghaiTime(msg.createdAt));
+  const createdAt = normalizeYiaiTimestamp(msg.createdAt);
+  if (createdAt !== null) {
+    parts.push(formatShanghaiTime(createdAt));
   }
   return parts.join(' · ');
 }
@@ -468,17 +465,39 @@ function TokenBadge({ account, onClick }: { account: TokenAccount | null; onClic
   );
 }
 
-function AppIcon({ icon }: { icon: string | null }) {
-  const [failed, setFailed] = useState(false);
-  const isImage =
-    icon && (icon.startsWith('http://') || icon.startsWith('https://') || icon.startsWith('data:'));
+interface AppIconApp {
+  icon_type?: 'emoji' | 'image' | null;
+  icon?: string | null;
+  icon_url?: string | null;
+  icon_background?: string | null;
+}
 
-  if (isImage && !failed) {
-    return <img className="app-icon-image" src={icon} alt="" onError={() => { setFailed(true); }} />;
+export function AppIcon({ app }: { app: AppIconApp | null | undefined }) {
+  const [failed, setFailed] = useState(false);
+
+  if (!app) {
+    return <span className="app-icon-placeholder" aria-hidden="true" />;
   }
 
-  if (icon) {
-    return <span className="app-icon-text">{icon}</span>;
+  if ((app.icon_type === 'image' || app.icon_url) && !failed) {
+    const src = app.icon_url ?? app.icon ?? '';
+    if (src) {
+      return (
+        <img
+          className="app-icon-image"
+          src={src}
+          alt=""
+          onError={() => {
+            setFailed(true);
+          }}
+          style={{ background: app.icon_background ?? undefined }}
+        />
+      );
+    }
+  }
+
+  if (app.icon_type === 'emoji' && app.icon) {
+    return <span className="app-icon-text">{app.icon}</span>;
   }
 
   return <span className="app-icon-placeholder" aria-hidden="true" />;
@@ -536,7 +555,7 @@ function AppHub({
           {apps.map((app) => (
             <button key={app.id} className="app-card" onClick={() => { onSelectApp(app.slug); }}>
               <div className="app-icon">
-                <AppIcon icon={app.icon} />
+                <AppIcon app={app} />
               </div>
               <h3>{app.name}</h3>
               {app.description && <p>{app.description}</p>}
@@ -662,8 +681,18 @@ export function ChatPage({
   const [showInputForm, setShowInputForm] = useState(false);
   const [pendingInputs, setPendingInputs] = useState<Record<string, unknown> | undefined>(undefined);
   const [inputFormLoadError, setInputFormLoadError] = useState('');
+  const [drawerOpen, setDrawerOpen] = useState(false);
+  const [pendingImage, setPendingImage] = useState<
+    | {
+        file: File;
+        previewUrl: string;
+        uploaded?: { id: string; type: string; url: string };
+      }
+    | null
+  >(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const abortControllerRef = useRef<AbortController | null>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
 
   const scrollToBottom = () => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
@@ -697,7 +726,7 @@ export function ChatPage({
           rawContent: msg.answer,
           files: msg.message_files ?? undefined,
           usage: msg.metadata?.usage?.total_tokens,
-          createdAt: msg.created_at,
+          createdAt: normalizeYiaiTimestamp(msg.created_at) ?? undefined,
         });
       }
       setMessages(loaded);
@@ -776,24 +805,129 @@ export function ChatPage({
     onBack();
   };
 
+  const uploadImage = async (file: File): Promise<{ id: string; type: string; url: string }> => {
+    const formData = new FormData();
+    formData.append('file', file);
+    const token = localStorage.getItem(TOKEN_KEY);
+    const headers: Record<string, string> = {};
+    if (token) {
+      headers.Authorization = `Bearer ${token}`;
+    }
+
+    const response = await fetch(`/api/apps/${slug}/files`, {
+      method: 'POST',
+      headers,
+      body: formData,
+    });
+    const data = (await response.json()) as { error?: string; id?: string; type?: string; url?: string };
+    if (!response.ok) {
+      throw new Error(data.error ?? '上传失败');
+    }
+    if (!data.id || !data.url) {
+      throw new Error('上传返回数据不完整');
+    }
+    return { id: data.id, type: data.type ?? 'image', url: data.url };
+  };
+
+  const clearPendingImage = () => {
+    if (pendingImage?.previewUrl) {
+      URL.revokeObjectURL(pendingImage.previewUrl);
+    }
+    setPendingImage(null);
+    if (fileInputRef.current) {
+      fileInputRef.current.value = '';
+    }
+  };
+
+  const handleImageSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) {
+      return;
+    }
+    const previewUrl = URL.createObjectURL(file);
+    setPendingImage({ file, previewUrl });
+
+    void (async () => {
+      try {
+        const uploaded = await uploadImage(file);
+        setPendingImage((prev) => (prev ? { ...prev, uploaded } : null));
+      } catch (err) {
+        setError(err instanceof Error ? err.message : '图片上传失败');
+        clearPendingImage();
+      }
+    })();
+  };
+
+  const handleDeleteConversation = async (conv: YiaiConversation) => {
+    if (!window.confirm(`确认删除「${conv.name}」吗？删除后不可恢复。`)) {
+      return;
+    }
+    setError('');
+    try {
+      await api(`/apps/${slug}/conversations/${conv.id}`, { method: 'DELETE' });
+      const remaining = conversations.filter((c) => c.id !== conv.id);
+      setConversations(remaining);
+
+      if (conv.id === activeConversationId) {
+        setActiveConversationId(undefined);
+        setMessages([]);
+        setPendingInputs({});
+        setInputFormLoadError('');
+
+        if (remaining.length > 0) {
+          const latest = remaining[0];
+          setActiveConversationId(latest.id);
+          setPendingInputs(latest.inputs);
+          await loadMessages(latest.id);
+        } else if (bootstrap?.app.requires_new_conversation_inputs) {
+          const formFields = bootstrap.user_input_form ?? [];
+          if (formFields.length === 0) {
+            setInputFormLoadError('用户信息表单加载失败，请重试');
+            setShowInputForm(false);
+          } else {
+            setInputFormLoadError('');
+            setShowInputForm(true);
+          }
+        }
+      }
+    } catch (err) {
+      setError(err instanceof Error ? err.message : '删除失败');
+    }
+  };
+
   const handleSend = async (query: string) => {
-    if (!query.trim() || loading) {
+    const text = query.trim();
+    if ((!text && !pendingImage?.uploaded) || loading) {
       return;
     }
     setLoading(true);
     setError('');
 
-    const userMessage: ChatMessage = { role: 'user', content: query.trim() };
+    const userFiles = pendingImage?.uploaded ? [{ type: 'image' as const, url: pendingImage.uploaded.url }] : undefined;
+    const userMessage: ChatMessage = {
+      role: 'user',
+      content: text,
+      files: userFiles,
+    };
     const assistantMessage: ChatMessage = { role: 'assistant', content: '', rawContent: '' };
     setMessages((prev) => [...prev, userMessage, assistantMessage]);
 
     const token = localStorage.getItem(TOKEN_KEY);
     const body: ChatRequestBody = {
-      query: query.trim(),
+      query: text,
       inputs: pendingInputs ?? {},
     };
     if (activeConversationId) {
       body.conversation_id = activeConversationId;
+    }
+    if (pendingImage?.uploaded) {
+      body.files = [
+        {
+          type: 'image',
+          transfer_method: 'local_file',
+          upload_file_id: pendingImage.uploaded.id,
+        },
+      ];
     }
 
     abortControllerRef.current?.abort();
@@ -847,12 +981,7 @@ export function ChatPage({
             }
 
             const totalTokens = ((data.metadata as Record<string, unknown> | undefined)?.usage as Record<string, unknown> | undefined)?.total_tokens;
-            const messageCreatedAt =
-              typeof data.created_at === 'number'
-                ? data.created_at
-                : typeof data.created_at === 'string'
-                  ? new Date(data.created_at).getTime()
-                  : Date.now();
+            const messageCreatedAt = normalizeYiaiTimestamp(data.created_at) ?? Date.now();
 
             setMessages((prev) => {
               const next = [...prev];
@@ -899,9 +1028,18 @@ export function ChatPage({
         <button className="secondary" onClick={onBack}>
           ← 应用中心
         </button>
+        <button
+          className="secondary mobile-history-toggle"
+          onClick={() => {
+            setDrawerOpen((open) => !open);
+          }}
+          type="button"
+        >
+          历史会话（{conversations.length}）
+        </button>
         <div className="chat-title">
           <span className="chat-icon">
-            <AppIcon icon={bootstrap?.app.icon ?? null} />
+            <AppIcon app={bootstrap?.app} />
           </span>
           <span>{bootstrap?.app.name ?? slug}</span>
         </div>
@@ -913,8 +1051,19 @@ export function ChatPage({
         </div>
       </header>
 
-      <aside className="chat-sidebar">
-        <h4>最近会话</h4>
+      <aside className={`chat-sidebar${drawerOpen ? ' open' : ''}`} data-testid="chat-sidebar">
+        <div className="chat-sidebar-header">
+          <h4>最近会话</h4>
+          <button
+            className="secondary drawer-close"
+            onClick={() => {
+              setDrawerOpen(false);
+            }}
+            type="button"
+          >
+            关闭
+          </button>
+        </div>
         {conversations.length === 0 && <p className="empty">暂无会话</p>}
         <ul>
           {conversations.map((conv) => (
@@ -925,14 +1074,35 @@ export function ChatPage({
                 setActiveConversationId(conv.id);
                 setPendingInputs(conv.inputs);
                 setError('');
+                setDrawerOpen(false);
                 void loadMessages(conv.id);
               }}
             >
-              {conv.name}
+              <span className="conversation-name">{conv.name}</span>
+              <button
+                className="secondary delete-conversation"
+                title="删除会话"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  void handleDeleteConversation(conv);
+                }}
+                type="button"
+              >
+                删除
+              </button>
             </li>
           ))}
         </ul>
       </aside>
+      {drawerOpen && (
+        <div
+          className="chat-sidebar-backdrop"
+          onClick={() => {
+            setDrawerOpen(false);
+          }}
+          aria-hidden="true"
+        />
+      )}
 
       <main className="chat-main">
         {(error || inputFormLoadError) && (
@@ -969,36 +1139,78 @@ export function ChatPage({
                     </div>
                   )}
                 </div>
-                {msg.role === 'assistant' && (msg.usage !== undefined || msg.createdAt !== undefined) && (
-                  <div className="message-meta">{formatMessageMeta(msg)}</div>
-                )}
+                {msg.role === 'assistant' &&
+                  (msg.usage !== undefined || normalizeYiaiTimestamp(msg.createdAt) !== null) && (
+                    <div className="message-meta">{formatMessageMeta(msg)}</div>
+                  )}
               </div>
             </div>
           ))}
           <div ref={messagesEndRef} />
         </div>
 
-        <form
-          className="input-bar"
-          onSubmit={(e) => {
-            e.preventDefault();
-            void handleSend(input);
-            setInput('');
-          }}
-        >
-          <input
-            type="text"
-            value={input}
-            onChange={(e) => {
-              setInput(e.target.value);
+        <div className="input-area">
+          {pendingImage && (
+            <div className="pending-image">
+              <img src={pendingImage.previewUrl} alt="待发送图片" />
+              {!pendingImage.uploaded && <span className="uploading-hint">图片上传中...</span>}
+              <button
+                className="secondary remove-image"
+                onClick={clearPendingImage}
+                type="button"
+                disabled={loading}
+              >
+                移除
+              </button>
+            </div>
+          )}
+          <form
+            className="input-bar"
+            onSubmit={(e) => {
+              e.preventDefault();
+              void handleSend(input);
+              setInput('');
+              clearPendingImage();
             }}
-            placeholder="输入问题..."
-            disabled={loading || !!inputFormLoadError}
-          />
-          <button type="submit" disabled={loading || !!inputFormLoadError || !input.trim()}>
-            {loading ? '发送中...' : '发送'}
-          </button>
-        </form>
+          >
+            <input
+              type="text"
+              value={input}
+              onChange={(e) => {
+                setInput(e.target.value);
+              }}
+              placeholder="输入问题..."
+              disabled={loading || !!inputFormLoadError || (pendingImage !== null && !pendingImage.uploaded)}
+            />
+            <input
+              ref={fileInputRef}
+              type="file"
+              accept="image/*"
+              onChange={handleImageSelect}
+              style={{ display: 'none' }}
+            />
+            <button
+              type="button"
+              className="secondary"
+              onClick={() => {
+                fileInputRef.current?.click();
+              }}
+              disabled={loading || !!inputFormLoadError || pendingImage !== null}
+            >
+              图片
+            </button>
+            <button
+              type="submit"
+              disabled={
+                loading ||
+                !!inputFormLoadError ||
+                (!input.trim() && !pendingImage?.uploaded)
+              }
+            >
+              {loading ? '发送中...' : '发送'}
+            </button>
+          </form>
+        </div>
       </main>
 
       {showInputForm && bootstrap?.user_input_form && (
@@ -1276,10 +1488,20 @@ function AdminUsersTab() {
 function AdminAppsTab() {
   const [apps, setApps] = useState<AdminApp[]>([]);
   const [editingApp, setEditingApp] = useState<AdminApp | null>(null);
+  const [creating, setCreating] = useState(false);
   const [newApiKey, setNewApiKey] = useState('');
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
   const [message, setMessage] = useState('');
+  const [createForm, setCreateForm] = useState({
+    slug: '',
+    api_base_url: '',
+    api_key: '',
+    requires_new_conversation_inputs: false,
+    enabled: true,
+    sort_order: 0,
+  });
+  const [createFormError, setCreateFormError] = useState('');
 
   const loadApps = useCallback(async () => {
     const list = await api<AdminApp[]>('/admin/apps');
@@ -1296,6 +1518,80 @@ function AdminAppsTab() {
         setLoading(false);
       });
   }, [loadApps]);
+
+  const validateCreateForm = (form: typeof createForm): string | null => {
+    if (!form.slug.trim()) {
+      return '应用标识不能为空';
+    }
+    if (!/^[a-zA-Z0-9_-]+$/.test(form.slug.trim())) {
+      return '应用标识只能包含字母、数字、下划线和连字符';
+    }
+    if (!form.api_base_url.trim()) {
+      return 'API Base URL 不能为空';
+    }
+    if (!form.api_key.trim()) {
+      return 'API Key 不能为空';
+    }
+    return null;
+  };
+
+  const handleCreateSubmit = (e: React.SyntheticEvent<HTMLFormElement>) => {
+    e.preventDefault();
+    setCreateFormError('');
+    setError('');
+
+    const validationError = validateCreateForm(createForm);
+    if (validationError) {
+      setCreateFormError(validationError);
+      return;
+    }
+
+    const body = {
+      slug: createForm.slug.trim(),
+      api_base_url: createForm.api_base_url.trim(),
+      api_key: createForm.api_key,
+      requires_new_conversation_inputs: createForm.requires_new_conversation_inputs,
+      enabled: createForm.enabled,
+      sort_order: createForm.sort_order,
+    };
+
+    void (async () => {
+      try {
+        await api('/admin/apps', {
+          method: 'POST',
+          body: JSON.stringify(body),
+        });
+        setMessage('应用创建成功');
+        setCreating(false);
+        setCreateForm({
+          slug: '',
+          api_base_url: '',
+          api_key: '',
+          requires_new_conversation_inputs: false,
+          enabled: true,
+          sort_order: 0,
+        });
+        await loadApps();
+      } catch (err: unknown) {
+        setError(err instanceof Error ? err.message : '创建失败');
+      }
+    })();
+  };
+
+  const handleSync = async (id: string) => {
+    setError('');
+    setMessage('');
+    try {
+      await api(`/admin/apps/${id}/sync`, {
+        method: 'POST',
+        body: JSON.stringify({}),
+      });
+      setMessage('应用同步成功');
+      await loadApps();
+    } catch (err: unknown) {
+      setError(err instanceof Error ? err.message : '同步失败');
+    }
+  };
 
   const handleSave = (e: React.SyntheticEvent<HTMLFormElement>) => {
     e.preventDefault();
@@ -1341,6 +1637,15 @@ function AdminAppsTab() {
     <div className="admin-tab">
       {error && <p className="error-banner">{error}</p>}
       {message && <p className="success-banner">{message}</p>}
+      <div className="admin-actions">
+        <button
+          onClick={() => {
+            setCreating(true);
+          }}
+        >
+          新增 Chatflow 应用
+        </button>
+      </div>
       {loading && <p>加载中...</p>}
       {!loading && (
         <table className="admin-table">
@@ -1368,11 +1673,96 @@ function AdminAppsTab() {
                   <button className="secondary" onClick={() => { setEditingApp(app); }}>
                     编辑
                   </button>
+                  <button className="secondary" onClick={() => { void handleSync(app.id); }}>
+                    同步 YIAI 信息
+                  </button>
                 </td>
               </tr>
             ))}
           </tbody>
         </table>
+      )}
+
+      {creating && (
+        <div className="modal-overlay" onClick={() => { setCreating(false); }}>
+          <div className="modal wide" onClick={(e) => { e.stopPropagation(); }}>
+            <h3>新增 Chatflow 应用</h3>
+            {createFormError && <p className="error">{createFormError}</p>}
+            <form onSubmit={handleCreateSubmit}>
+              <label>
+                应用标识 slug
+                <input
+                  type="text"
+                  value={createForm.slug}
+                  onChange={(e) => {
+                    setCreateForm((prev) => ({ ...prev, slug: e.target.value }));
+                  }}
+                  required
+                />
+              </label>
+              <label>
+                YIAI Chatflow API Base URL
+                <input
+                  type="text"
+                  value={createForm.api_base_url}
+                  onChange={(e) => {
+                    setCreateForm((prev) => ({ ...prev, api_base_url: e.target.value }));
+                  }}
+                  required
+                />
+              </label>
+              <label>
+                YIAI Chatflow API Key
+                <input
+                  type="password"
+                  value={createForm.api_key}
+                  onChange={(e) => {
+                    setCreateForm((prev) => ({ ...prev, api_key: e.target.value }));
+                  }}
+                  required
+                />
+              </label>
+              <label>
+                排序
+                <input
+                  type="number"
+                  step={1}
+                  value={createForm.sort_order}
+                  onChange={(e) => {
+                    setCreateForm((prev) => ({ ...prev, sort_order: parseInt(e.target.value || '0', 10) }));
+                  }}
+                  required
+                />
+              </label>
+              <label className="checkbox">
+                <input
+                  type="checkbox"
+                  checked={createForm.requires_new_conversation_inputs}
+                  onChange={(e) => {
+                    setCreateForm((prev) => ({ ...prev, requires_new_conversation_inputs: e.target.checked }));
+                  }}
+                />
+                每次新建对话采集变量信息
+              </label>
+              <label className="checkbox">
+                <input
+                  type="checkbox"
+                  checked={createForm.enabled}
+                  onChange={(e) => {
+                    setCreateForm((prev) => ({ ...prev, enabled: e.target.checked }));
+                  }}
+                />
+                启用
+              </label>
+              <div className="modal-actions">
+                <button type="button" className="secondary" onClick={() => { setCreating(false); }}>
+                  取消
+                </button>
+                <button type="submit">保存</button>
+              </div>
+            </form>
+          </div>
+        </div>
       )}
 
       {editingApp && (
@@ -1399,7 +1789,7 @@ function AdminAppsTab() {
               <label>
                 新 API Key（留空保持原值，保存后不回显）
                 <input
-                  type="text"
+                  type="password"
                   value={newApiKey}
                   onChange={(e) => { setNewApiKey(e.target.value); }}
                   placeholder="留空则不修改"

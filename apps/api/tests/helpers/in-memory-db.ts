@@ -29,7 +29,12 @@ export async function createInMemoryPool(): Promise<Pool> {
   const pool = new PoolClass();
 
   const migrationsDir = path.resolve(__dirname, '../../../../db/migrations');
-  const files = ['001_create_users.sql', '002_create_yiai_apps_and_usage.sql', '003_create_token_accounts_and_ledger.sql'];
+  const files = [
+    '001_create_users.sql',
+    '002_create_yiai_apps_and_usage.sql',
+    '003_create_token_accounts_and_ledger.sql',
+    '004_add_yiai_app_icon_fields.sql',
+  ];
 
   for (const file of files) {
     const sql = fs.readFileSync(path.join(migrationsDir, file), 'utf-8');
@@ -59,6 +64,8 @@ export async function createTestApp(
     name: string;
     description: string;
     icon: string;
+    icon_type: 'image' | 'emoji' | null;
+    icon_background: string | null;
     api_base_url: string;
     api_key: string;
     enabled: boolean;
@@ -67,15 +74,19 @@ export async function createTestApp(
   }> = {}
 ): Promise<string> {
   const slug = overrides.slug ?? `app-${crypto.randomUUID()}`;
+  const icon = overrides.icon ?? null;
+  const icon_type = overrides.icon_type ?? (icon ? ( /^\p{Extended_Pictographic}+$/u.test(icon) ? 'emoji' : 'image') : null);
   const result = await pool.query<{ id: string }>(
-    `INSERT INTO yiai_apps (slug, name, description, icon, api_base_url, api_key, enabled, sort_order, requires_new_conversation_inputs)
-     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+    `INSERT INTO yiai_apps (slug, name, description, icon, icon_type, icon_background, api_base_url, api_key, enabled, sort_order, requires_new_conversation_inputs)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
      RETURNING id`,
     [
       slug,
       overrides.name ?? 'Test App',
       overrides.description ?? null,
-      overrides.icon ?? null,
+      icon,
+      icon_type,
+      overrides.icon_background ?? null,
       overrides.api_base_url ?? 'https://yiai.example.com/v1',
       overrides.api_key ?? 'test-key',
       overrides.enabled ?? true,

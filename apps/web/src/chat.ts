@@ -1,7 +1,10 @@
+import type { ChatRequestFile } from '@yiai/shared';
+
 export interface ChatRequestBody {
   query: string;
   inputs: Record<string, unknown>;
   conversation_id?: string;
+  files?: ChatRequestFile[];
 }
 
 export async function startChatStream(

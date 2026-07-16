@@ -6,6 +6,7 @@ import type {
   UserInputFormField,
   UserInputFormType,
   ChatRequest,
+  UploadedFile,
 } from '@yiai/shared';
 
 interface DbApp extends YiaiApp {
@@ -24,17 +25,28 @@ interface YiaiInfoResponse {
   name?: string;
   description?: string;
   icon?: string;
+  icon_type?: 'image' | 'emoji';
+  icon_url?: string;
+  icon_background?: string;
+}
+
+interface YiaiSiteInfoResponse {
+  title?: string;
+  icon?: string;
+  description?: string;
+  icon_type?: 'image' | 'emoji';
+  icon_url?: string;
+  icon_background?: string;
 }
 
 interface YiaiSiteResponse {
   title?: string;
   icon?: string;
   description?: string;
-  site_info?: {
-    title?: string;
-    icon?: string;
-    description?: string;
-  };
+  icon_type?: 'image' | 'emoji';
+  icon_url?: string;
+  icon_background?: string;
+  site_info?: YiaiSiteInfoResponse;
 }
 
 interface YiaiParametersResponse {
@@ -43,16 +55,141 @@ interface YiaiParametersResponse {
   user_input_form?: unknown;
 }
 
-export interface AppMetadata {
+interface IconFields {
+  icon: string | null;
+  icon_type: 'image' | 'emoji' | null;
+  icon_url: string | null;
+  icon_background: string | null;
+}
+
+export interface AppMetadata extends IconFields {
   name: string | null;
   description: string | null;
-  icon: string | null;
   user_input_form: UserInputFormField[] | null;
 }
 
 interface UpstreamAppMetadata extends AppMetadata {
   opening_statement: string | null;
   suggested_questions: string[] | null;
+}
+
+export interface AppBootstrapResult {
+  app: YiaiApp;
+  opening_statement: string | null;
+  suggested_questions: string[] | null;
+  user_input_form: UserInputFormField[] | null;
+}
+
+export interface UploadFileInput {
+  buffer: Buffer;
+  mimetype: string;
+  filename: string;
+}
+
+export class YiaiAppNotFoundError extends Error {
+  constructor(slug: string) {
+    super(`应用不存在: ${slug}`);
+    this.name = 'YiaiAppNotFoundError';
+  }
+}
+
+export class YiaiUpstreamError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'YiaiUpstreamError';
+  }
+}
+
+function getUpstreamUserId(userId: string): string {
+  return `yiai-platform-${userId}`;
+}
+
+function isValidIconType(value: unknown): value is 'image' | 'emoji' {
+  return value === 'image' || value === 'emoji';
+}
+
+function looksLikeUrl(value: string): boolean {
+  return /^https?:\/\//.test(value);
+}
+
+function inferIconType(icon: string | null): 'image' | 'emoji' | null {
+  if (!icon) {
+    return null;
+  }
+  // 简单 Emoji 检测：仅由扩展象形文字字符组成
+  if (/^\p{Extended_Pictographic}+$/u.test(icon)) {
+    return 'emoji';
+  }
+  return 'image';
+}
+
+function resolveIconType(rawIcon: string | null, explicitType: unknown): 'image' | 'emoji' | null {
+  if (isValidIconType(explicitType)) {
+    return explicitType;
+  }
+  return inferIconType(rawIcon);
+}
+
+function pickSiteInfo(site: YiaiSiteResponse): YiaiSiteInfoResponse {
+  return site.site_info ?? site;
+}
+
+function extractIconFields(info: YiaiInfoResponse, siteInfo: YiaiSiteInfoResponse): IconFields {
+  const rawIcon =
+    (typeof siteInfo.icon === 'string' && siteInfo.icon.trim() !== '' ? siteInfo.icon : null) ??
+    (typeof info.icon === 'string' && info.icon.trim() !== '' ? info.icon : null) ??
+    null;
+
+  const icon_type = resolveIconType(rawIcon, siteInfo.icon_type ?? info.icon_type);
+
+  let icon_url =
+    (typeof siteInfo.icon_url === 'string' && siteInfo.icon_url.trim() !== '' ? siteInfo.icon_url : null) ??
+    (typeof info.icon_url === 'string' && info.icon_url.trim() !== '' ? info.icon_url : null) ??
+    null;
+  const icon_background =
+    (typeof siteInfo.icon_background === 'string' && siteInfo.icon_background.trim() !== ''
+      ? siteInfo.icon_background
+      : null) ??
+    (typeof info.icon_background === 'string' && info.icon_background.trim() !== '' ? info.icon_background : null) ??
+    null;
+
+  const icon = rawIcon;
+  if (icon_type === 'image') {
+    if (!icon_url && rawIcon && looksLikeUrl(rawIcon)) {
+      icon_url = rawIcon;
+    }
+  }
+
+  return {
+    icon,
+    icon_type,
+    icon_url,
+    icon_background,
+  };
+}
+
+function buildSafeIconFields(
+  dbApp: Pick<DbApp, 'icon' | 'icon_type' | 'icon_background'>,
+  metadata?: Pick<AppMetadata, 'icon' | 'icon_type' | 'icon_url' | 'icon_background'>
+): IconFields {
+  const rawIcon = metadata?.icon ?? dbApp.icon ?? null;
+  let icon_type = metadata?.icon_type ?? dbApp.icon_type ?? null;
+  if (!icon_type && rawIcon) {
+    icon_type = inferIconType(rawIcon);
+  }
+
+  let icon_url = metadata?.icon_url ?? null;
+  const icon_background = metadata?.icon_background ?? dbApp.icon_background ?? null;
+  let icon = rawIcon;
+
+  if (icon_type === 'image') {
+    icon = null;
+    if (!icon_url && rawIcon && looksLikeUrl(rawIcon)) {
+      icon_url = rawIcon;
+    }
+  }
+
+  return { icon, icon_type, icon_url, icon_background };
 }
 
 function normalizeOptions(options: unknown): UserInputFormField['options'] {
@@ -118,39 +255,6 @@ function normalizeUserInputForm(raw: unknown): UserInputFormField[] | null {
   return normalized.length > 0 ? normalized : null;
 }
 
-export class YiaiAppNotFoundError extends Error {
-  constructor(slug: string) {
-    super(`应用不存在: ${slug}`);
-    this.name = 'YiaiAppNotFoundError';
-  }
-}
-
-export class YiaiUpstreamError extends Error {
-  constructor(message: string) {
-    super(message);
-    this.name = 'YiaiUpstreamError';
-  }
-}
-
-function getUpstreamUserId(userId: string): string {
-  return `yiai-platform-${userId}`;
-}
-
-export async function findAppBySlug(pool: Pool, slug: string): Promise<DbApp | undefined> {
-  const result = await pool.query<DbApp>('SELECT * FROM yiai_apps WHERE slug = $1 AND enabled = true', [slug]);
-  return result.rows.at(0);
-}
-
-export async function listEnabledApps(pool: Pool): Promise<YiaiApp[]> {
-  const result = await pool.query<YiaiApp>(
-    `SELECT id, slug, name, description, icon, sort_order, requires_new_conversation_inputs, created_at, updated_at
-     FROM yiai_apps
-     WHERE enabled = true
-     ORDER BY sort_order ASC, created_at ASC`
-  );
-  return result.rows;
-}
-
 async function yiaiGet<T>(url: string, apiKey: string): Promise<T> {
   let response: Response;
   try {
@@ -170,17 +274,6 @@ async function yiaiGet<T>(url: string, apiKey: string): Promise<T> {
   }
 
   return (await response.json()) as T;
-}
-
-export interface AppBootstrapResult {
-  app: YiaiApp;
-  opening_statement: string | null;
-  suggested_questions: string[] | null;
-  user_input_form: UserInputFormField[] | null;
-}
-
-function pickSiteInfo(site: YiaiSiteResponse): { title?: string; description?: string; icon?: string } {
-  return site.site_info ?? site;
 }
 
 async function fetchUpstreamAppMetadata(baseUrl: string, apiKey: string): Promise<UpstreamAppMetadata> {
@@ -203,19 +296,55 @@ async function fetchUpstreamAppMetadata(baseUrl: string, apiKey: string): Promis
     (typeof info.description === 'string' && info.description.trim() !== '' ? info.description : null) ??
     null;
 
-  const icon: string | null =
-    (typeof info.icon === 'string' && info.icon.trim() !== '' ? info.icon : null) ??
-    (typeof siteInfo.icon === 'string' && siteInfo.icon.trim() !== '' ? siteInfo.icon : null) ??
-    null;
+  const iconFields = extractIconFields(info, siteInfo);
 
   return {
     name,
     description,
-    icon,
+    ...iconFields,
     user_input_form: normalizeUserInputForm(parameters.user_input_form),
     opening_statement: parameters.opening_statement ?? null,
     suggested_questions: parameters.suggested_questions ?? null,
   };
+}
+
+export async function findAppBySlug(pool: Pool, slug: string): Promise<DbApp | undefined> {
+  const result = await pool.query<DbApp>('SELECT * FROM yiai_apps WHERE slug = $1 AND enabled = true', [slug]);
+  return result.rows.at(0);
+}
+
+export async function listEnabledApps(pool: Pool): Promise<YiaiApp[]> {
+  const result = await pool.query<DbApp>(
+    `SELECT id, slug, name, description, icon, icon_type, icon_background, sort_order,
+            requires_new_conversation_inputs, created_at, updated_at
+     FROM yiai_apps
+     WHERE enabled = true
+     ORDER BY sort_order ASC, created_at ASC`
+  );
+
+  const rows = result.rows;
+  const iconUrls = await Promise.all(rows.map((row) => resolveAppIconUrl(row)));
+
+  return rows.map((row, index) => toSafeApp(row, iconUrls[index]));
+}
+
+export async function resolveAppIconUrl(
+  app: Pick<DbApp, 'api_base_url' | 'api_key' | 'icon' | 'icon_type' | 'icon_background'>
+): Promise<string | null> {
+  const iconType = app.icon_type ?? inferIconType(app.icon);
+  if (iconType !== 'image') {
+    return null;
+  }
+
+  try {
+    const baseUrl = app.api_base_url.replace(/\/$/, '');
+    const site = await yiaiGet<YiaiSiteResponse>(`${baseUrl}/site`, app.api_key);
+    const siteInfo = pickSiteInfo(site);
+    const fields = extractIconFields({}, siteInfo);
+    return fields.icon_url;
+  } catch {
+    return null;
+  }
 }
 
 export async function fetchAppMetadata(
@@ -243,6 +372,9 @@ export async function fetchAppMetadata(
     name: metadata.name,
     description: metadata.description,
     icon: metadata.icon,
+    icon_type: metadata.icon_type,
+    icon_url: metadata.icon_url,
+    icon_background: metadata.icon_background,
     user_input_form: metadata.user_input_form,
   };
 }
@@ -254,6 +386,7 @@ export async function bootstrapApp(pool: Pool, slug: string): Promise<AppBootstr
   }
 
   const metadata = await fetchUpstreamAppMetadata(app.api_base_url, app.api_key);
+  const iconFields = buildSafeIconFields(app, metadata);
 
   return {
     app: {
@@ -261,7 +394,10 @@ export async function bootstrapApp(pool: Pool, slug: string): Promise<AppBootstr
       slug: app.slug,
       name: app.name || metadata.name || slug,
       description: app.description ?? metadata.description ?? null,
-      icon: app.icon ?? metadata.icon ?? null,
+      icon: iconFields.icon,
+      icon_type: iconFields.icon_type,
+      icon_url: iconFields.icon_url,
+      icon_background: iconFields.icon_background,
       sort_order: app.sort_order,
       requires_new_conversation_inputs: app.requires_new_conversation_inputs,
       created_at: app.created_at,
@@ -289,6 +425,38 @@ export async function listConversations(
 
   const response = await yiaiGet<YiaiApiResponse<YiaiConversation>>(url, app.api_key);
   return response.data ?? [];
+}
+
+export async function deleteConversation(
+  pool: Pool,
+  slug: string,
+  userId: string,
+  conversationId: string
+): Promise<void> {
+  const app = await findAppBySlug(pool, slug);
+  if (!app) {
+    throw new YiaiAppNotFoundError(slug);
+  }
+
+  const baseUrl = app.api_base_url.replace(/\/$/, '');
+  const upstreamUserId = getUpstreamUserId(userId);
+  const url = `${baseUrl}/conversations/${encodeURIComponent(conversationId)}?user=${encodeURIComponent(upstreamUserId)}`;
+
+  let response: Response;
+  try {
+    response = await fetch(url, {
+      method: 'DELETE',
+      headers: {
+        Authorization: `Bearer ${app.api_key}`,
+      },
+    });
+  } catch (err) {
+    throw new YiaiUpstreamError(`删除会话失败：${err instanceof Error ? err.message : '未知错误'}`);
+  }
+
+  if (!response.ok) {
+    throw new YiaiUpstreamError(`删除会话失败：上游返回 ${String(response.status)} ${response.statusText}`);
+  }
 }
 
 export async function listMessages(
@@ -350,13 +518,17 @@ export async function chatUpstream(
   const baseUrl = app.api_base_url.replace(/\/$/, '');
   const upstreamUserId = getUpstreamUserId(userId);
 
-  const upstreamBody = {
+  const upstreamBody: Record<string, unknown> = {
     query: request.query,
     inputs: request.inputs ?? {},
     response_mode: 'streaming',
     conversation_id: request.conversation_id,
     user: upstreamUserId,
   };
+
+  if (Array.isArray(request.files) && request.files.length > 0) {
+    upstreamBody.files = request.files;
+  }
 
   return fetch(`${baseUrl}/chat-messages`, {
     method: 'POST',
@@ -367,6 +539,55 @@ export async function chatUpstream(
     },
     body: JSON.stringify(upstreamBody),
   });
+}
+
+export async function uploadFileToUpstream(
+  pool: Pool,
+  slug: string,
+  userId: string,
+  file: UploadFileInput
+): Promise<UploadedFile> {
+  const app = await findAppBySlug(pool, slug);
+  if (!app) {
+    throw new YiaiAppNotFoundError(slug);
+  }
+
+  const baseUrl = app.api_base_url.replace(/\/$/, '');
+  const upstreamUserId = getUpstreamUserId(userId);
+  const url = `${baseUrl}/files?user=${encodeURIComponent(upstreamUserId)}`;
+
+  const formData = new FormData();
+  const fileBytes = new Uint8Array(file.buffer);
+  formData.append('file', new Blob([fileBytes], { type: file.mimetype }), file.filename);
+
+  let response: Response;
+  try {
+    response = await fetch(url, {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${app.api_key}`,
+      },
+      body: formData,
+    });
+  } catch (err) {
+    throw new YiaiUpstreamError(`文件上传失败：${err instanceof Error ? err.message : '未知错误'}`);
+  }
+
+  if (!response.ok) {
+    throw new YiaiUpstreamError(`文件上传失败：上游返回 ${String(response.status)} ${response.statusText}`);
+  }
+
+  const data = (await response.json()) as Record<string, unknown>;
+  const id = typeof data.id === 'string' ? data.id : '';
+  const urlField = typeof data.url === 'string' ? data.url : '';
+  const name = typeof data.name === 'string' ? data.name : undefined;
+
+  return {
+    id,
+    type: 'image',
+    url: urlField,
+    ...(name !== undefined ? { name } : {}),
+  };
 }
 
 export interface UsageRecordPayload {
@@ -393,16 +614,60 @@ export async function recordUsage(client: Pool | PoolClient, payload: UsageRecor
   return row.id;
 }
 
-export function toSafeApp(app: DbApp | YiaiApp): YiaiApp {
+export function toSafeApp(
+  app: Omit<YiaiApp, 'icon_url'> & { icon_url?: string | null },
+  iconUrl: string | null = null
+): YiaiApp {
+  const iconType = app.icon_type ?? inferIconType(app.icon);
   return {
     id: app.id,
     slug: app.slug,
     name: app.name,
     description: app.description,
-    icon: app.icon,
+    icon: iconType === 'image' ? null : app.icon,
+    icon_type: iconType,
+    icon_url: iconType === 'image' ? iconUrl : null,
+    icon_background: app.icon_background,
     sort_order: app.sort_order,
     requires_new_conversation_inputs: app.requires_new_conversation_inputs,
     created_at: app.created_at,
     updated_at: app.updated_at,
   };
+}
+
+export function normalizeYiaiTimestamp(value: unknown): number | null {
+  if (value === null || value === undefined) {
+    return null;
+  }
+
+  if (typeof value === 'number') {
+    if (!Number.isFinite(value) || value <= 0) {
+      return null;
+    }
+    // 10 位秒 -> 毫秒；13 位毫秒保持
+    if (value < 1_000_000_000_000) {
+      return value * 1000;
+    }
+    return value;
+  }
+
+  if (typeof value === 'string') {
+    const trimmed = value.trim();
+    if (trimmed === '') {
+      return null;
+    }
+    const parsed = Number(trimmed);
+    if (!Number.isNaN(parsed) && parsed > 0) {
+      if (parsed < 1_000_000_000_000) {
+        return parsed * 1000;
+      }
+      return parsed;
+    }
+    const date = new Date(trimmed);
+    if (!Number.isNaN(date.getTime())) {
+      return date.getTime();
+    }
+  }
+
+  return null;
 }

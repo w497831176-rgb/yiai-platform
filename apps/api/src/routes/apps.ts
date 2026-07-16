@@ -1,5 +1,6 @@
 import type { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify';
 import type { Pool } from 'pg';
+import multipart from '@fastify/multipart';
 import { authenticate } from '../auth/decorator.js';
 import type { ChatRequest } from '@yiai/shared';
 import {
@@ -8,10 +9,13 @@ import {
   listConversations,
   listMessages,
   chatUpstream,
+  deleteConversation,
+  uploadFileToUpstream,
   recordUsage,
   YiaiAppNotFoundError,
   YiaiUpstreamError,
   type AppBootstrapResult,
+  type UploadFileInput,
 } from '../services/yiai.js';
 import { deductForUsage, getTokenAccount } from '../services/token-account.js';
 
@@ -19,6 +23,8 @@ interface RouteParams {
   slug: string;
   conversationId: string;
 }
+
+const TEN_MB = 10 * 1024 * 1024;
 
 function validateRequiredInputs(bootstrap: AppBootstrapResult, inputs: Record<string, unknown> | undefined): string | null {
   if (!bootstrap.user_input_form || bootstrap.user_input_form.length === 0) {
@@ -42,6 +48,11 @@ function validateRequiredInputs(bootstrap: AppBootstrapResult, inputs: Record<st
 export function appRoutes(fastify: FastifyInstance, options: { pool: Pool }): void {
   const { pool } = options;
 
+  void fastify.register(multipart, {
+    limits: {
+      fileSize: 100 * 1024 * 1024, // 让插件不要提前截断，由业务层校验 10MB
+    },
+  });
   fastify.addHook('preHandler', authenticate);
 
   fastify.get('/', async (_request: FastifyRequest, reply: FastifyReply) => {
@@ -97,6 +108,28 @@ export function appRoutes(fastify: FastifyInstance, options: { pool: Pool }): vo
     }
   });
 
+  fastify.delete('/:slug/conversations/:conversationId', async (request: FastifyRequest, reply: FastifyReply) => {
+    const params = request.params as RouteParams;
+    const { slug, conversationId } = params;
+    const userId = request.user?.id;
+    if (!userId) {
+      return await reply.status(401).send({ error: '未登录' });
+    }
+
+    try {
+      await deleteConversation(pool, slug, userId, conversationId);
+      return await reply.status(204).send();
+    } catch (err) {
+      if (err instanceof YiaiAppNotFoundError) {
+        return await reply.status(404).send({ error: err.message });
+      }
+      if (err instanceof YiaiUpstreamError) {
+        return await reply.status(502).send({ error: err.message });
+      }
+      return await reply.status(500).send({ error: '服务器内部错误' });
+    }
+  });
+
   fastify.get(
     '/:slug/conversations/:conversationId/messages',
     async (request: FastifyRequest, reply: FastifyReply) => {
@@ -122,6 +155,65 @@ export function appRoutes(fastify: FastifyInstance, options: { pool: Pool }): vo
     }
   );
 
+  fastify.post('/:slug/files', async (request: FastifyRequest, reply: FastifyReply) => {
+    const params = request.params as RouteParams;
+    const { slug } = params;
+    const userId = request.user?.id;
+    if (!userId) {
+      return await reply.status(401).send({ error: '未登录' });
+    }
+
+    let fileData;
+    try {
+      fileData = await request.file();
+    } catch (err) {
+      request.log.error(err);
+      if (err instanceof Error && (err.name === 'RequestFileTooLargeError' || /too large/i.test(err.message))) {
+        return await reply.status(400).send({ error: '图片大小超过 10MB' });
+      }
+      return await reply.status(400).send({ error: '请求格式错误' });
+    }
+
+    if (!fileData) {
+      return await reply.status(400).send({ error: '请求格式错误' });
+    }
+
+    if (!fileData.mimetype.startsWith('image/')) {
+      return await reply.status(400).send({ error: '仅支持图片文件' });
+    }
+
+    let buffer: Buffer;
+    try {
+      buffer = await fileData.toBuffer();
+    } catch (err) {
+      request.log.error(err);
+      return await reply.status(400).send({ error: '读取图片失败' });
+    }
+
+    if (buffer.length > TEN_MB) {
+      return await reply.status(400).send({ error: '图片大小超过 10MB' });
+    }
+
+    try {
+      const fileInput: UploadFileInput = {
+        buffer,
+        mimetype: fileData.mimetype,
+        filename: fileData.filename,
+      };
+      const uploaded = await uploadFileToUpstream(pool, slug, userId, fileInput);
+      return await reply.send(uploaded);
+    } catch (err) {
+      if (err instanceof YiaiAppNotFoundError) {
+        return await reply.status(404).send({ error: err.message });
+      }
+      if (err instanceof YiaiUpstreamError) {
+        return await reply.status(502).send({ error: err.message });
+      }
+      request.log.error(err);
+      return await reply.status(500).send({ error: '服务器内部错误' });
+    }
+  });
+
   fastify.post('/:slug/chat', async (request: FastifyRequest, reply: FastifyReply) => {
     const params = request.params as RouteParams;
     const { slug } = params;
@@ -131,7 +223,8 @@ export function appRoutes(fastify: FastifyInstance, options: { pool: Pool }): vo
     }
 
     const body = request.body as ChatRequest | undefined;
-    if (!body || typeof body.query !== 'string' || body.query.trim().length === 0) {
+    const hasFiles = Array.isArray(body?.files) && body.files.length > 0;
+    if (!body || typeof body.query !== 'string' || (body.query.trim().length === 0 && !hasFiles)) {
       return await reply.status(400).send({ error: '请求格式错误' });
     }
 
@@ -167,6 +260,7 @@ export function appRoutes(fastify: FastifyInstance, options: { pool: Pool }): vo
         query: body.query.trim(),
         conversation_id: body.conversation_id,
         inputs: body.inputs,
+        files: body.files,
       });
     } catch (err) {
       if (err instanceof YiaiAppNotFoundError) {
