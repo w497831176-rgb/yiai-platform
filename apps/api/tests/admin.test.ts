@@ -36,20 +36,19 @@ function mockUpstreamMetadata(
     parameters?: Record<string, unknown>;
   } = {}
 ) {
+  const info = overrides.info ?? { name: 'Upstream Name', description: 'Upstream desc' };
+  const site = overrides.site ?? { title: 'Site Title', icon: '🤖' };
+  const parameters = overrides.parameters ?? {
+    opening_statement: '欢迎使用',
+    suggested_questions: ['q1'],
+    user_input_form: [{ type: 'text-input', label: 'Name', variable: 'name', required: true }],
+  };
+
   fetchMock
-    .mockResolvedValueOnce(new Response(JSON.stringify(overrides.info ?? { name: 'Upstream Name', description: 'Upstream desc' })))
-    .mockResolvedValueOnce(new Response(JSON.stringify(overrides.site ?? { title: 'Site Title', icon: '🤖' })))
-    .mockResolvedValueOnce(
-      new Response(
-        JSON.stringify(
-          overrides.parameters ?? {
-            opening_statement: '欢迎使用',
-            suggested_questions: ['q1'],
-            user_input_form: [{ type: 'text-input', label: 'Name', variable: 'name', required: true }],
-          }
-        )
-      )
-    );
+    .mockResolvedValueOnce(new Response(JSON.stringify(info)))
+    .mockResolvedValueOnce(new Response(JSON.stringify(site)))
+    .mockResolvedValueOnce(new Response(JSON.stringify(parameters)))
+    .mockResolvedValueOnce(new Response(JSON.stringify(site)));
 }
 
 describe('Admin Routes', () => {
@@ -115,12 +114,13 @@ describe('Admin Routes', () => {
     expect(created.icon).toBe('🤖');
     expect(created.requires_new_conversation_inputs).toBe(true);
 
-    // Verify upstream endpoints were called
-    expect(fetchMock).toHaveBeenCalledTimes(3);
-    const [infoCall, siteCall, parametersCall] = fetchMock.mock.calls;
+    // Verify upstream endpoints were called (metadata + icon refresh /site)
+    expect(fetchMock).toHaveBeenCalledTimes(4);
+    const [infoCall, siteCall, parametersCall, iconSiteCall] = fetchMock.mock.calls;
     expect(infoCall[0]).toBe('https://yiai.example.com/v1/info');
     expect(siteCall[0]).toBe('https://yiai.example.com/v1/site');
     expect(parametersCall[0]).toBe('https://yiai.example.com/v1/parameters');
+    expect(iconSiteCall[0]).toBe('https://yiai.example.com/v1/site');
   });
 
   it('auto detects requires_new_conversation_inputs when not provided', async () => {
@@ -130,7 +130,8 @@ describe('Admin Routes', () => {
     fetchMock
       .mockResolvedValueOnce(new Response(JSON.stringify({ name: 'No Form' })))
       .mockResolvedValueOnce(new Response(JSON.stringify({ title: 'No Form Site' })))
-      .mockResolvedValueOnce(new Response(JSON.stringify({ user_input_form: [] })));
+      .mockResolvedValueOnce(new Response(JSON.stringify({ user_input_form: [] })))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ title: 'No Form Site' })));
 
     const token = await login(app, 'admin_user', 'testpass');
 
@@ -258,7 +259,8 @@ describe('Admin Routes', () => {
     fetchMock
       .mockResolvedValueOnce(new Response(JSON.stringify({ name: 'Synced Name' })))
       .mockResolvedValueOnce(new Response(JSON.stringify({ site_info: { title: 'Synced Site', description: 'Synced desc', icon: '🔄' } })))
-      .mockResolvedValueOnce(new Response(JSON.stringify({ user_input_form: [] })));
+      .mockResolvedValueOnce(new Response(JSON.stringify({ user_input_form: [] })))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ site_info: { title: 'Synced Site', description: 'Synced desc', icon: '🔄' } })));
 
     const token = await login(app, 'admin_user', 'testpass');
 
@@ -290,7 +292,8 @@ describe('Admin Routes', () => {
     fetchMock
       .mockResolvedValueOnce(new Response(JSON.stringify({ name: 'Flag Name' })))
       .mockResolvedValueOnce(new Response(JSON.stringify({ title: 'Flag Site' })))
-      .mockResolvedValueOnce(new Response(JSON.stringify({ user_input_form: [] })));
+      .mockResolvedValueOnce(new Response(JSON.stringify({ user_input_form: [] })))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ title: 'Flag Site' })));
 
     const token = await login(app, 'admin_user', 'testpass');
 
@@ -305,7 +308,7 @@ describe('Admin Routes', () => {
     expect(synced.requires_new_conversation_inputs).toBe(true);
   });
 
-  it('syncs image icon_url from upstream site', async () => {
+  it('syncs image icon_url from upstream site and caches locally', async () => {
     const app = await buildApp(pool);
     await createTestUser(pool, 'admin_user', 'admin', 'testpass');
     const appId = await createTestApp(pool, {
@@ -316,20 +319,22 @@ describe('Admin Routes', () => {
       icon: 'app-icon-uuid',
     });
 
+    const siteResponse = {
+      title: 'Image App',
+      icon_type: 'image',
+      icon: 'app-icon-uuid',
+      icon_url: 'https://cdn.example.com/app-icon.png',
+      icon_background: '#FFFFFF',
+    };
+
     fetchMock
       .mockResolvedValueOnce(new Response(JSON.stringify({ name: 'Image App' })))
+      .mockResolvedValueOnce(new Response(JSON.stringify(siteResponse)))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ user_input_form: [] })))
+      .mockResolvedValueOnce(new Response(JSON.stringify(siteResponse)))
       .mockResolvedValueOnce(
-        new Response(
-          JSON.stringify({
-            title: 'Image App',
-            icon_type: 'image',
-            icon: 'app-icon-uuid',
-            icon_url: 'https://cdn.example.com/app-icon.png',
-            icon_background: '#FFFFFF',
-          })
-        )
-      )
-      .mockResolvedValueOnce(new Response(JSON.stringify({ user_input_form: [] })));
+        new Response(Buffer.from('fake-icon-bytes'), { headers: { 'content-type': 'image/png' } })
+      );
 
     const token = await login(app, 'admin_user', 'testpass');
 
@@ -344,8 +349,13 @@ describe('Admin Routes', () => {
     expect(synced).not.toHaveProperty('api_key');
     expect(synced.icon_type).toBe('image');
     expect(synced.icon).toBeNull();
-    expect(synced.icon_url).toBe('https://cdn.example.com/app-icon.png');
+    expect(typeof synced.icon_url).toBe('string');
+    expect((synced.icon_url as string).startsWith('/api/app-icons/image-icon-app?v=')).toBe(true);
     expect(synced.icon_background).toBe('#FFFFFF');
+
+    expect(fetchMock).toHaveBeenCalledTimes(5);
+    const downloadCall = fetchMock.mock.calls[4];
+    expect(downloadCall[0]).toBe('https://cdn.example.com/app-icon.png');
   });
 
   it('prevents duplicate slug when creating apps', async () => {

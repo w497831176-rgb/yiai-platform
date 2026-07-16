@@ -8,10 +8,14 @@ import type {
   ChatRequest,
   UploadedFile,
 } from '@yiai/shared';
+import { getLocalIconUrl } from './icon-cache.js';
 
 interface DbApp extends YiaiApp {
   api_base_url: string;
   api_key: string;
+  icon_cache_filename: string | null;
+  icon_cache_content_type: string | null;
+  icon_cached_at: Date | null;
 }
 
 interface YiaiApiResponse<T> {
@@ -168,30 +172,6 @@ function extractIconFields(info: YiaiInfoResponse, siteInfo: YiaiSiteInfoRespons
   };
 }
 
-function buildSafeIconFields(
-  dbApp: Pick<DbApp, 'icon' | 'icon_type' | 'icon_background'>,
-  metadata?: Pick<AppMetadata, 'icon' | 'icon_type' | 'icon_url' | 'icon_background'>
-): IconFields {
-  const rawIcon = metadata?.icon ?? dbApp.icon ?? null;
-  let icon_type = metadata?.icon_type ?? dbApp.icon_type ?? null;
-  if (!icon_type && rawIcon) {
-    icon_type = inferIconType(rawIcon);
-  }
-
-  let icon_url = metadata?.icon_url ?? null;
-  const icon_background = metadata?.icon_background ?? dbApp.icon_background ?? null;
-  let icon = rawIcon;
-
-  if (icon_type === 'image') {
-    icon = null;
-    if (!icon_url && rawIcon && looksLikeUrl(rawIcon)) {
-      icon_url = rawIcon;
-    }
-  }
-
-  return { icon, icon_type, icon_url, icon_background };
-}
-
 function normalizeOptions(options: unknown): UserInputFormField['options'] {
   if (!Array.isArray(options)) {
     return undefined;
@@ -315,36 +295,15 @@ export async function findAppBySlug(pool: Pool, slug: string): Promise<DbApp | u
 
 export async function listEnabledApps(pool: Pool): Promise<YiaiApp[]> {
   const result = await pool.query<DbApp>(
-    `SELECT id, slug, name, description, icon, icon_type, icon_background, api_base_url, api_key, sort_order,
-            requires_new_conversation_inputs, created_at, updated_at
+    `SELECT id, slug, name, description, icon, icon_type, icon_background, sort_order,
+            requires_new_conversation_inputs, created_at, updated_at,
+            icon_cache_filename, icon_cached_at
      FROM yiai_apps
      WHERE enabled = true
      ORDER BY sort_order ASC, created_at ASC`
   );
 
-  const rows = result.rows;
-  const iconUrls = await Promise.all(rows.map((row) => resolveAppIconUrl(row)));
-
-  return rows.map((row, index) => toSafeApp(row, iconUrls[index]));
-}
-
-export async function resolveAppIconUrl(
-  app: Pick<DbApp, 'api_base_url' | 'api_key' | 'icon' | 'icon_type' | 'icon_background'>
-): Promise<string | null> {
-  const iconType = app.icon_type ?? inferIconType(app.icon);
-  if (iconType !== 'image') {
-    return null;
-  }
-
-  try {
-    const baseUrl = app.api_base_url.replace(/\/$/, '');
-    const site = await yiaiGet<YiaiSiteResponse>(`${baseUrl}/site`, app.api_key);
-    const siteInfo = pickSiteInfo(site);
-    const fields = extractIconFields({}, siteInfo);
-    return fields.icon_url;
-  } catch {
-    return null;
-  }
+  return result.rows.map((row) => toSafeApp(row));
 }
 
 export async function fetchAppMetadata(
@@ -385,27 +344,28 @@ export async function bootstrapApp(pool: Pool, slug: string): Promise<AppBootstr
     throw new YiaiAppNotFoundError(slug);
   }
 
-  const metadata = await fetchUpstreamAppMetadata(app.api_base_url, app.api_key);
-  const iconFields = buildSafeIconFields(app, metadata);
+  const baseUrl = app.api_base_url.replace(/\/$/, '');
+  const parameters = await yiaiGet<YiaiParametersResponse>(`${baseUrl}/parameters`, app.api_key);
+  const iconType = app.icon_type ?? inferIconType(app.icon);
 
   return {
     app: {
       id: app.id,
       slug: app.slug,
-      name: app.name || metadata.name || slug,
-      description: app.description ?? metadata.description ?? null,
-      icon: iconFields.icon,
-      icon_type: iconFields.icon_type,
-      icon_url: iconFields.icon_url,
-      icon_background: iconFields.icon_background,
+      name: app.name || slug,
+      description: app.description ?? null,
+      icon: iconType === 'image' ? null : app.icon,
+      icon_type: iconType,
+      icon_url: getLocalIconUrl(app),
+      icon_background: app.icon_background,
       sort_order: app.sort_order,
       requires_new_conversation_inputs: app.requires_new_conversation_inputs,
       created_at: app.created_at,
       updated_at: app.updated_at,
     },
-    opening_statement: metadata.opening_statement,
-    suggested_questions: metadata.suggested_questions,
-    user_input_form: metadata.user_input_form,
+    opening_statement: parameters.opening_statement ?? null,
+    suggested_questions: parameters.suggested_questions ?? null,
+    user_input_form: normalizeUserInputForm(parameters.user_input_form),
   };
 }
 
@@ -615,10 +575,15 @@ export async function recordUsage(client: Pool | PoolClient, payload: UsageRecor
 }
 
 export function toSafeApp(
-  app: Omit<YiaiApp, 'icon_url'> & { icon_url?: string | null },
+  app: Omit<YiaiApp, 'icon_url'> & {
+    icon_url?: string | null;
+    icon_cache_filename?: string | null;
+    icon_cached_at?: Date | string | null;
+  },
   iconUrl: string | null = null
 ): YiaiApp {
   const iconType = app.icon_type ?? inferIconType(app.icon);
+  const resolvedIconUrl = iconUrl ?? getLocalIconUrl(app);
   return {
     id: app.id,
     slug: app.slug,
@@ -626,7 +591,7 @@ export function toSafeApp(
     description: app.description,
     icon: iconType === 'image' ? null : app.icon,
     icon_type: iconType,
-    icon_url: iconType === 'image' ? iconUrl : null,
+    icon_url: iconType === 'image' ? resolvedIconUrl : null,
     icon_background: app.icon_background,
     sort_order: app.sort_order,
     requires_new_conversation_inputs: app.requires_new_conversation_inputs,

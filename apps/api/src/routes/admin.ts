@@ -2,13 +2,8 @@ import type { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify';
 import type { Pool } from 'pg';
 import { authenticate } from '../auth/decorator.js';
 import { ensureDailyGift, getAllUserAccounts, getLedgerEntries, rechargeTokens } from '../services/token-account.js';
-import {
-  fetchAppMetadata,
-  resolveAppIconUrl,
-  toSafeApp,
-  YiaiUpstreamError,
-  type AppMetadata,
-} from '../services/yiai.js';
+import { fetchAppMetadata, toSafeApp, YiaiUpstreamError, type AppMetadata } from '../services/yiai.js';
+import { getLocalIconUrl, refreshAppIconCache } from '../services/icon-cache.js';
 
 interface AdminParams {
   userId: string;
@@ -40,7 +35,6 @@ interface AdminAppRow {
   description: string | null;
   icon: string | null;
   icon_type: 'image' | 'emoji' | null;
-  icon_url: string | null;
   icon_background: string | null;
   api_base_url: string;
   api_key: string;
@@ -49,6 +43,9 @@ interface AdminAppRow {
   requires_new_conversation_inputs: boolean;
   created_at: string;
   updated_at: string;
+  icon_cache_filename: string | null;
+  icon_cache_content_type: string | null;
+  icon_cached_at: Date | null;
 }
 
 function assertAdmin(request: FastifyRequest, reply: FastifyReply): boolean {
@@ -74,19 +71,9 @@ function inferIconType(icon: string | null): 'image' | 'emoji' | null {
   return 'image';
 }
 
-async function toAdminAppResponse(row: AdminAppRow): Promise<Record<string, unknown>> {
-  const iconUrl = await resolveAppIconUrl(row);
+function toAdminAppResponse(row: AdminAppRow): Record<string, unknown> {
   return {
-    ...toSafeApp(row, iconUrl),
-    api_base_url: row.api_base_url,
-    api_key_configured: typeof row.api_key === 'string' && row.api_key !== '',
-    enabled: row.enabled,
-  };
-}
-
-function toAdminAppResponseWithIconUrl(row: AdminAppRow, iconUrl: string | null): Record<string, unknown> {
-  return {
-    ...toSafeApp(row, iconUrl),
+    ...toSafeApp(row, getLocalIconUrl(row)),
     api_base_url: row.api_base_url,
     api_key_configured: typeof row.api_key === 'string' && row.api_key !== '',
     enabled: row.enabled,
@@ -168,12 +155,12 @@ export function adminRoutes(fastify: FastifyInstance, options: { pool: Pool }) {
     if (!assertAdmin(request, reply)) return;
     const result = await pool.query<AdminAppRow>(
       `SELECT id, slug, name, description, icon, icon_type, icon_background, api_base_url, api_key, enabled, sort_order,
-              requires_new_conversation_inputs, created_at, updated_at
+              requires_new_conversation_inputs, created_at, updated_at,
+              icon_cache_filename, icon_cache_content_type, icon_cached_at
        FROM yiai_apps
        ORDER BY sort_order, id`
     );
-    const apps = await Promise.all(result.rows.map(toAdminAppResponse));
-    return apps;
+    return result.rows.map(toAdminAppResponse);
   });
 
   fastify.post('/admin/apps', { preHandler: authenticate }, async (request, reply) => {
@@ -211,7 +198,8 @@ export function adminRoutes(fastify: FastifyInstance, options: { pool: Pool }) {
         `
           INSERT INTO yiai_apps (slug, name, description, icon, icon_type, icon_background, api_base_url, api_key, enabled, sort_order, requires_new_conversation_inputs)
           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
-          RETURNING id, slug, name, description, icon, icon_type, icon_background, api_base_url, api_key, enabled, sort_order, requires_new_conversation_inputs, created_at, updated_at
+          RETURNING id, slug, name, description, icon, icon_type, icon_background, api_base_url, api_key, enabled, sort_order, requires_new_conversation_inputs, created_at, updated_at,
+                   icon_cache_filename, icon_cache_content_type, icon_cached_at
         `,
         [
           body.slug,
@@ -228,7 +216,9 @@ export function adminRoutes(fastify: FastifyInstance, options: { pool: Pool }) {
         ]
       );
       const row = result.rows[0] as AdminAppRow;
-      return await reply.status(201).send(toAdminAppResponseWithIconUrl(row, metadata.icon_url));
+      await refreshAppIconCache(pool, row);
+      const refreshed = await pool.query<AdminAppRow>('SELECT * FROM yiai_apps WHERE id = $1', [row.id]);
+      return await reply.status(201).send(toAdminAppResponse(refreshed.rows[0]));
     } catch (error) {
       if (error && typeof error === 'object' && 'code' in error && error.code === '23505') {
         return reply.status(409).send({ error: '应用标识已存在' });
@@ -279,12 +269,15 @@ export function adminRoutes(fastify: FastifyInstance, options: { pool: Pool }) {
     fields.push('updated_at = NOW()');
     values.push(params.id);
     const result = await pool.query(
-      `UPDATE yiai_apps SET ${fields.join(', ')} WHERE id = $${String(values.length)} RETURNING id, slug, name, description, icon, icon_type, icon_background, api_base_url, api_key, enabled, sort_order, requires_new_conversation_inputs, created_at, updated_at`,
+      `UPDATE yiai_apps SET ${fields.join(', ')} WHERE id = $${String(values.length)} RETURNING id, slug, name, description, icon, icon_type, icon_background, api_base_url, api_key, enabled, sort_order, requires_new_conversation_inputs, created_at, updated_at,
+       icon_cache_filename, icon_cache_content_type, icon_cached_at`,
       values
     );
 
     const row = result.rows[0] as AdminAppRow;
-    return toAdminAppResponseWithIconUrl(row, metadata.icon_url);
+    await refreshAppIconCache(pool, row);
+    const refreshed = await pool.query<AdminAppRow>('SELECT * FROM yiai_apps WHERE id = $1', [row.id]);
+    return toAdminAppResponse(refreshed.rows[0]);
   });
 
   fastify.patch('/admin/apps/:id', { preHandler: authenticate }, async (request, reply) => {
@@ -318,7 +311,7 @@ export function adminRoutes(fastify: FastifyInstance, options: { pool: Pool }) {
     if (body.requires_new_conversation_inputs !== undefined) addField('requires_new_conversation_inputs', body.requires_new_conversation_inputs);
     if (isNonEmptyString(body.api_key)) addField('api_key', body.api_key);
 
-    let iconUrl: string | null = null;
+    let shouldRefreshIcon = false;
     if (body.sync_metadata) {
       let metadata;
       try {
@@ -329,7 +322,7 @@ export function adminRoutes(fastify: FastifyInstance, options: { pool: Pool }) {
         }
         throw err;
       }
-      iconUrl = metadata.icon_url;
+      shouldRefreshIcon = true;
       if (body.name === undefined) addField('name', metadata.name ?? app.name);
       if (body.description === undefined) addField('description', metadata.description ?? app.description);
       if (body.icon === undefined) {
@@ -347,11 +340,16 @@ export function adminRoutes(fastify: FastifyInstance, options: { pool: Pool }) {
     fields.push('updated_at = NOW()');
     values.push(params.id);
     const result = await pool.query(
-      `UPDATE yiai_apps SET ${fields.join(', ')} WHERE id = $${String(values.length)} RETURNING id, slug, name, description, icon, icon_type, icon_background, api_base_url, api_key, enabled, sort_order, requires_new_conversation_inputs, created_at, updated_at`,
+      `UPDATE yiai_apps SET ${fields.join(', ')} WHERE id = $${String(values.length)} RETURNING id, slug, name, description, icon, icon_type, icon_background, api_base_url, api_key, enabled, sort_order, requires_new_conversation_inputs, created_at, updated_at,
+       icon_cache_filename, icon_cache_content_type, icon_cached_at`,
       values
     );
 
     const row = result.rows[0] as AdminAppRow;
-    return toAdminAppResponseWithIconUrl(row, iconUrl);
+    if (shouldRefreshIcon) {
+      await refreshAppIconCache(pool, row);
+    }
+    const refreshed = await pool.query<AdminAppRow>('SELECT * FROM yiai_apps WHERE id = $1', [row.id]);
+    return toAdminAppResponse(refreshed.rows[0]);
   });
 }

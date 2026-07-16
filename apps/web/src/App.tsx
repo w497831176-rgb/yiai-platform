@@ -479,21 +479,18 @@ export function AppIcon({ app }: { app: AppIconApp | null | undefined }) {
     return <span className="app-icon-placeholder" aria-hidden="true" />;
   }
 
-  if ((app.icon_type === 'image' || app.icon_url) && !failed) {
-    const src = app.icon_url ?? app.icon ?? '';
-    if (src) {
-      return (
-        <img
-          className="app-icon-image"
-          src={src}
-          alt=""
-          onError={() => {
-            setFailed(true);
-          }}
-          style={{ background: app.icon_background ?? undefined }}
-        />
-      );
-    }
+  if (app.icon_type === 'image' && app.icon_url && !failed) {
+    return (
+      <img
+        className="app-icon-image"
+        src={app.icon_url}
+        alt=""
+        onError={() => {
+          setFailed(true);
+        }}
+        style={{ background: app.icon_background ?? undefined }}
+      />
+    );
   }
 
   if (app.icon_type === 'emoji' && app.icon) {

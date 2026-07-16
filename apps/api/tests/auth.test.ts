@@ -35,7 +35,7 @@ describe('Authentication', () => {
     const body = JSON.parse(response.body) as AuthResponse;
     expect(body.user.username).toBe('test_user');
     expect(body.user.role).toBe('user');
-    expect(body.user.password_hash).toBeUndefined();
+    expect((body.user as unknown as Record<string, unknown>).password_hash).toBeUndefined();
     expect(body.token).toBeDefined();
 
     const account = await pool.query<{ gift_tokens: number }>('SELECT gift_tokens FROM token_accounts WHERE user_id = $1', [body.user.id]);

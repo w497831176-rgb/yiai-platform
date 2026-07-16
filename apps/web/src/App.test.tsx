@@ -16,6 +16,78 @@ describe('App', () => {
   });
 });
 
+describe('AppHub', () => {
+  const fetchMock = vi.fn<FetchFn>((input, init) => {
+    const url = typeof input === 'string' ? input : input.url;
+    const method = init?.method ?? 'GET';
+
+    if (url.endsWith('/auth/me')) {
+      return Promise.resolve(
+        new Response(JSON.stringify({ id: 'user-1', username: 'tester', role: 'user' }))
+      );
+    }
+
+    if (url.endsWith('/token-account')) {
+      return Promise.resolve(
+        new Response(
+          JSON.stringify({
+            gift_tokens: 100,
+            recharge_tokens: 50,
+            total_tokens: 150,
+            daily_gift_amount: 10,
+            gift_tokens_max: 200,
+            last_gift_date: null,
+          })
+        )
+      );
+    }
+
+    if (url.endsWith('/apps') && method === 'GET') {
+      return Promise.resolve(
+        new Response(
+          JSON.stringify([
+            {
+              id: 'app-1',
+              slug: 'test-app',
+              name: 'Test App',
+              description: null,
+              icon: null,
+              icon_type: null,
+              icon_url: null,
+              icon_background: null,
+              sort_order: 1,
+              requires_new_conversation_inputs: false,
+            },
+          ])
+        )
+      );
+    }
+
+    return Promise.reject(new Error(`Unexpected fetch: ${method} ${url}`));
+  });
+
+  beforeEach(() => {
+    fetchMock.mockClear();
+    vi.stubGlobal('fetch', fetchMock);
+    localStorage.setItem(TOKEN_KEY, 'test-token');
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    localStorage.removeItem(TOKEN_KEY);
+  });
+
+  it('renders app names from /api/apps', async () => {
+    render(<App />);
+
+    await waitFor(() => {
+      expect(screen.getByText('应用中心')).toBeInTheDocument();
+    });
+
+    expect(screen.getByText('Test App')).toBeInTheDocument();
+  });
+});
+
 describe('AdminAppsTab', () => {
   const fetchMock = vi.fn<FetchFn>((input, init) => {
     const url = typeof input === 'string' ? input : input.url;
@@ -99,6 +171,18 @@ describe('AdminAppsTab', () => {
       );
     }
 
+    if (url.endsWith('/admin/apps/app-1/sync') && method === 'POST') {
+      return Promise.resolve(
+        new Response(
+          JSON.stringify({
+            id: 'app-1',
+            slug: 'test-app',
+            name: 'Test App',
+          })
+        )
+      );
+    }
+
     return Promise.reject(new Error(`Unexpected fetch: ${method} ${url}`));
   });
 
@@ -166,6 +250,10 @@ describe('AdminAppsTab', () => {
       expect(body.enabled).toBe(true);
       expect(body.requires_new_conversation_inputs).toBe(false);
     });
+
+    await waitFor(() => {
+      expect(screen.getByText('应用创建成功')).toBeInTheDocument();
+    });
   });
 
   it('shows sync button for existing apps', async () => {
@@ -187,16 +275,51 @@ describe('AdminAppsTab', () => {
       expect(screen.getByRole('button', { name: '同步 YIAI 信息' })).toBeInTheDocument();
     });
   });
+
+  it('sync button triggers POST and refreshes list', async () => {
+    render(<App />);
+
+    await waitFor(() => {
+      expect(screen.getByText('应用中心')).toBeInTheDocument();
+    });
+
+    fireEvent.click(screen.getByRole('button', { name: '管理后台' }));
+
+    await waitFor(() => {
+      expect(screen.getByRole('button', { name: '应用管理' })).toBeInTheDocument();
+    });
+
+    fireEvent.click(screen.getByRole('button', { name: '应用管理' }));
+
+    await waitFor(() => {
+      expect(screen.getByRole('button', { name: '同步 YIAI 信息' })).toBeInTheDocument();
+    });
+
+    fireEvent.click(screen.getByRole('button', { name: '同步 YIAI 信息' }));
+
+    await waitFor(() => {
+      const syncCall = fetchMock.mock.calls.find(([url, init]) => {
+        const callUrl = typeof url === 'string' ? url : url.url;
+        const callMethod = init?.method ?? 'GET';
+        return callUrl.endsWith('/admin/apps/app-1/sync') && callMethod === 'POST';
+      });
+      expect(syncCall).toBeDefined();
+    });
+
+    await waitFor(() => {
+      expect(screen.getByText('应用同步成功')).toBeInTheDocument();
+    });
+  });
 });
 
 describe('AppIcon', () => {
-  it('renders image from icon_url and does not render UUID text', () => {
+  it('renders local icon_url when icon_type is image', () => {
     const { container } = render(
       <AppIcon
         app={{
           icon_type: 'image',
           icon: '550e8400-e29b-41d4-a716-446655440000',
-          icon_url: 'https://example.com/icon.png',
+          icon_url: '/api/app-icons/app-1/icon.png',
           icon_background: null,
         }}
       />
@@ -204,7 +327,39 @@ describe('AppIcon', () => {
 
     const img = container.querySelector('img');
     expect(img).toBeInTheDocument();
-    expect(img?.getAttribute('src')).toBe('https://example.com/icon.png');
+    expect(img?.getAttribute('src')).toBe('/api/app-icons/app-1/icon.png');
+  });
+
+  it('does not render UUID text when icon_url is local path but icon field is UUID', () => {
+    const { container } = render(
+      <AppIcon
+        app={{
+          icon_type: 'image',
+          icon: '550e8400-e29b-41d4-a716-446655440000',
+          icon_url: '/api/app-icons/app-1/icon.png',
+          icon_background: null,
+        }}
+      />
+    );
+
+    expect(container.querySelector('img')).toBeInTheDocument();
+    expect(container.textContent).not.toContain('550e8400');
+  });
+
+  it('shows placeholder when icon_url is null even if icon_type is image', () => {
+    const { container } = render(
+      <AppIcon
+        app={{
+          icon_type: 'image',
+          icon: '550e8400-e29b-41d4-a716-446655440000',
+          icon_url: null,
+          icon_background: null,
+        }}
+      />
+    );
+
+    expect(container.querySelector('.app-icon-placeholder')).toBeInTheDocument();
+    expect(container.querySelector('img')).not.toBeInTheDocument();
     expect(container.textContent).not.toContain('550e8400');
   });
 

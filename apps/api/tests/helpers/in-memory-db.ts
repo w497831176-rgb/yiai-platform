@@ -1,4 +1,5 @@
 import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 import crypto from 'node:crypto';
 import { fileURLToPath } from 'node:url';
@@ -34,12 +35,17 @@ export async function createInMemoryPool(): Promise<Pool> {
     '002_create_yiai_apps_and_usage.sql',
     '003_create_token_accounts_and_ledger.sql',
     '004_add_yiai_app_icon_fields.sql',
+    '005_add_yiai_app_icon_cache.sql',
   ];
 
   for (const file of files) {
     const sql = fs.readFileSync(path.join(migrationsDir, file), 'utf-8');
     await pool.query(sql);
   }
+
+  const iconCacheDir = path.join(os.tmpdir(), 'yiai-platform-icon-cache-test');
+  fs.mkdirSync(iconCacheDir, { recursive: true });
+  process.env.YIAI_PLATFORM_ICON_CACHE_DIR = iconCacheDir;
 
   return pool;
 }
@@ -62,8 +68,8 @@ export async function createTestApp(
   overrides: Partial<{
     slug: string;
     name: string;
-    description: string;
-    icon: string;
+    description: string | null;
+    icon: string | null;
     icon_type: 'image' | 'emoji' | null;
     icon_background: string | null;
     api_base_url: string;
@@ -71,14 +77,20 @@ export async function createTestApp(
     enabled: boolean;
     sort_order: number;
     requires_new_conversation_inputs: boolean;
+    icon_cache_filename: string | null;
+    icon_cache_content_type: string | null;
+    icon_cached_at: Date | string | null;
   }> = {}
 ): Promise<string> {
   const slug = overrides.slug ?? `app-${crypto.randomUUID()}`;
   const icon = overrides.icon ?? null;
   const icon_type = overrides.icon_type ?? (icon ? ( /^\p{Extended_Pictographic}+$/u.test(icon) ? 'emoji' : 'image') : null);
+  const icon_cache_filename = overrides.icon_cache_filename ?? null;
+  const icon_cache_content_type = overrides.icon_cache_content_type ?? null;
+  const icon_cached_at = overrides.icon_cached_at ?? null;
   const result = await pool.query<{ id: string }>(
-    `INSERT INTO yiai_apps (slug, name, description, icon, icon_type, icon_background, api_base_url, api_key, enabled, sort_order, requires_new_conversation_inputs)
-     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+    `INSERT INTO yiai_apps (slug, name, description, icon, icon_type, icon_background, api_base_url, api_key, enabled, sort_order, requires_new_conversation_inputs, icon_cache_filename, icon_cache_content_type, icon_cached_at)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
      RETURNING id`,
     [
       slug,
@@ -92,6 +104,9 @@ export async function createTestApp(
       overrides.enabled ?? true,
       overrides.sort_order ?? 1,
       overrides.requires_new_conversation_inputs ?? false,
+      icon_cache_filename,
+      icon_cache_content_type,
+      icon_cached_at,
     ]
   );
   return result.rows[0].id;

@@ -151,27 +151,21 @@ describe('App Routes', () => {
     expect(dunjiazi?.icon_type).toBeNull();
   });
 
-  it('resolves icon_url from upstream /site for image-type apps in apps list', async () => {
+  it('returns local icon_url for cached image-type apps without calling upstream', async () => {
     const app = await buildTestApp(pool);
     const token = await loginUser(app, 'test_user', 'testpass');
 
+    const cachedAt = new Date('2026-01-01T00:00:00.000Z');
     await createTestApp(pool, {
       slug: 'image-app',
       name: 'Image App',
       icon: '07e890ea-6d8a-4f87-ae17-25ccf4b62d3b',
       icon_type: 'image',
       sort_order: 4,
+      icon_cache_filename: 'image-app',
+      icon_cache_content_type: 'image/png',
+      icon_cached_at: cachedAt,
     });
-
-    fetchMock.mockResolvedValueOnce(
-      new Response(
-        JSON.stringify({
-          icon_type: 'image',
-          icon: '07e890ea-6d8a-4f87-ae17-25ccf4b62d3b',
-          icon_url: 'https://yiai.example.com/files/preview.png',
-        })
-      )
-    );
 
     const response = await app.inject({
       method: 'GET',
@@ -185,24 +179,22 @@ describe('App Routes', () => {
     expect(imageApp).toBeDefined();
     expect(imageApp?.icon_type).toBe('image');
     expect(imageApp?.icon).toBeNull();
-    expect(imageApp?.icon_url).toBe('https://yiai.example.com/files/preview.png');
+    expect(imageApp?.icon_url).toBe(`/api/app-icons/image-app?v=${String(cachedAt.getTime())}`);
     expect(imageApp).not.toHaveProperty('api_key');
     expect(imageApp).not.toHaveProperty('api_base_url');
+    expect(fetchMock).not.toHaveBeenCalled();
   });
 
-  it('returns bootstrap without api_key', async () => {
-    fetchMock
-      .mockResolvedValueOnce(new Response(JSON.stringify({ name: 'Upstream Name', description: 'Upstream desc' })))
-      .mockResolvedValueOnce(new Response(JSON.stringify({ title: 'Site Title' })))
-      .mockResolvedValueOnce(
-        new Response(
-          JSON.stringify({
-            opening_statement: '欢迎使用',
-            suggested_questions: ['q1'],
-            user_input_form: [{ type: 'text-input', label: 'Name', variable: 'name', required: true }],
-          })
-        )
-      );
+  it('returns bootstrap without api_key and only calls upstream parameters', async () => {
+    fetchMock.mockResolvedValueOnce(
+      new Response(
+        JSON.stringify({
+          opening_statement: '欢迎使用',
+          suggested_questions: ['q1'],
+          user_input_form: [{ type: 'text-input', label: 'Name', variable: 'name', required: true }],
+        })
+      )
+    );
 
     const app = await buildTestApp(pool);
     const token = await loginUser(app, 'test_user', 'testpass');
@@ -220,6 +212,10 @@ describe('App Routes', () => {
     expect(body.suggested_questions).toEqual(['q1']);
     expect(body).not.toHaveProperty('api_key');
     expect(body.app).not.toHaveProperty('api_key');
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    const [url] = fetchMock.mock.calls[0];
+    expect(url).toBe('https://yiai.example.com/v1/parameters');
   });
 
   it('returns conversations sorted by -updated_at', async () => {
@@ -452,8 +448,6 @@ describe('App Routes', () => {
   });
 
   it('requires required user_input_form fields for shouyi app and normalizes string[] options', async () => {
-    const infoResponse = () => Promise.resolve(new Response(JSON.stringify({ name: 'Info', description: '' })));
-    const siteResponse = () => Promise.resolve(new Response(JSON.stringify({ title: 'Site' })));
     const parametersResponse = () =>
       Promise.resolve(
         new Response(
@@ -479,13 +473,7 @@ describe('App Routes', () => {
         )
       );
 
-    fetchMock
-      .mockImplementationOnce(infoResponse)
-      .mockImplementationOnce(siteResponse)
-      .mockImplementationOnce(parametersResponse)
-      .mockImplementationOnce(infoResponse)
-      .mockImplementationOnce(siteResponse)
-      .mockImplementationOnce(parametersResponse);
+    fetchMock.mockImplementationOnce(parametersResponse).mockImplementationOnce(parametersResponse);
 
     const app = await buildTestApp(pool);
     const token = await loginUser(app, 'test_user', 'testpass');
