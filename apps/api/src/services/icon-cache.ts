@@ -125,6 +125,11 @@ async function ensureCacheDir(): Promise<void> {
 }
 
 async function yiaiGet<T>(url: string, apiKey: string): Promise<T> {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => {
+    controller.abort();
+  }, 30000);
+
   let response: Response;
   try {
     response = await fetch(url, {
@@ -133,9 +138,12 @@ async function yiaiGet<T>(url: string, apiKey: string): Promise<T> {
         Authorization: `Bearer ${apiKey}`,
         'Content-Type': 'application/json',
       },
+      signal: controller.signal,
     });
   } catch (err) {
     throw new Error(`YIAI 接口请求失败: ${err instanceof Error ? err.message : '未知错误'}`);
+  } finally {
+    clearTimeout(timeout);
   }
 
   if (!response.ok) {
@@ -145,21 +153,59 @@ async function yiaiGet<T>(url: string, apiKey: string): Promise<T> {
   return (await response.json()) as T;
 }
 
+const IMAGE_EXTENSIONS: Record<string, string> = {
+  '.png': 'image/png',
+  '.jpg': 'image/jpeg',
+  '.jpeg': 'image/jpeg',
+  '.gif': 'image/gif',
+  '.webp': 'image/webp',
+  '.svg': 'image/svg+xml',
+};
+
+function inferImageContentType(url: string, responseType: string | null): string {
+  if (responseType && responseType.startsWith('image/')) {
+    return responseType;
+  }
+
+  const lowerUrl = url.toLowerCase();
+  const queryIndex = lowerUrl.indexOf('?');
+  const pathPart = queryIndex >= 0 ? lowerUrl.slice(0, queryIndex) : lowerUrl;
+  for (const [ext, type] of Object.entries(IMAGE_EXTENSIONS)) {
+    if (pathPart.endsWith(ext)) {
+      return type;
+    }
+  }
+
+  return responseType ?? 'application/octet-stream';
+}
+
+function isAcceptableImageContentType(contentType: string): boolean {
+  return contentType.startsWith('image/') || contentType === 'application/octet-stream';
+}
+
 async function downloadIcon(url: string): Promise<{ buffer: Buffer; contentType: string }> {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => {
+    controller.abort();
+  }, 30000);
+
   let response: Response;
   try {
-    response = await fetch(url, { method: 'GET' });
+    response = await fetch(url, { method: 'GET', signal: controller.signal });
   } catch (err) {
     throw new Error(`下载图标失败: ${err instanceof Error ? err.message : '未知错误'}`);
+  } finally {
+    clearTimeout(timeout);
   }
 
   if (!response.ok) {
     throw new Error(`下载图标返回错误: ${String(response.status)} ${response.statusText}`);
   }
 
-  const contentType = response.headers.get('content-type') ?? 'application/octet-stream';
-  if (!contentType.startsWith('image/')) {
-    throw new Error(`非法图标 Content-Type: ${contentType}`);
+  const rawContentType = response.headers.get('content-type')?.split(';')[0]?.trim() ?? null;
+  const contentType = inferImageContentType(url, rawContentType);
+  if (!isAcceptableImageContentType(rawContentType ?? contentType)) {
+    throw new Error(`非法图标 Content-Type: ${rawContentType ?? contentType}`);
   }
 
   const arrayBuffer = await response.arrayBuffer();
@@ -196,21 +242,43 @@ export async function refreshAppIconCache(pool: Pool, app: CacheableApp): Promis
 
   const iconFields = extractIconFields(siteInfo);
 
-  if (iconFields.icon_type !== 'image' || !iconFields.icon_url) {
-    // 非图片图标：只更新元数据，不清理已有缓存文件
+  // 始终先更新元数据；后续下载失败时保留已有缓存文件和缓存字段
+  try {
     await pool.query(
       `UPDATE yiai_apps
        SET name = COALESCE($2, name),
            description = COALESCE($3, description),
            icon = $4,
            icon_type = $5,
-           icon_background = $6,
-           icon_cache_filename = NULL,
-           icon_cache_content_type = NULL,
-           icon_cached_at = NULL
+           icon_background = $6
        WHERE id = $1`,
       [app.id, name, description, iconFields.icon, iconFields.icon_type, iconFields.icon_background]
     );
+  } catch (err) {
+    console.error(
+      `[icon-cache] 更新应用 ${app.slug} 元数据失败:`,
+      err instanceof Error ? err.message : err
+    );
+    return;
+  }
+
+  if (iconFields.icon_type !== 'image' || !iconFields.icon_url) {
+    // 非图片图标：清理图片缓存字段，但保留缓存文件（如果存在）不做主动删除
+    try {
+      await pool.query(
+        `UPDATE yiai_apps
+         SET icon_cache_filename = NULL,
+             icon_cache_content_type = NULL,
+             icon_cached_at = NULL
+         WHERE id = $1`,
+        [app.id]
+      );
+    } catch (err) {
+      console.error(
+        `[icon-cache] 清除应用 ${app.slug} 图片缓存字段失败:`,
+        err instanceof Error ? err.message : err
+      );
+    }
     return;
   }
 
@@ -225,6 +293,7 @@ export async function refreshAppIconCache(pool: Pool, app: CacheableApp): Promis
       `[icon-cache] 下载应用 ${app.slug} 图标失败:`,
       err instanceof Error ? err.message : err
     );
+    // 保留已有缓存文件和数据库缓存字段
     return;
   }
 
@@ -245,25 +314,11 @@ export async function refreshAppIconCache(pool: Pool, app: CacheableApp): Promis
   try {
     await pool.query(
       `UPDATE yiai_apps
-       SET name = COALESCE($2, name),
-           description = COALESCE($3, description),
-           icon = $4,
-           icon_type = $5,
-           icon_background = $6,
-           icon_cache_filename = $7,
-           icon_cache_content_type = $8,
+       SET icon_cache_filename = $2,
+           icon_cache_content_type = $3,
            icon_cached_at = NOW()
        WHERE id = $1`,
-      [
-        app.id,
-        name,
-        description,
-        iconFields.icon,
-        iconFields.icon_type,
-        iconFields.icon_background,
-        slug,
-        contentType,
-      ]
+      [app.id, slug, contentType]
     );
   } catch (err) {
     console.error(
