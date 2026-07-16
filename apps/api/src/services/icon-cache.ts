@@ -162,7 +162,7 @@ const IMAGE_EXTENSIONS: Record<string, string> = {
   '.svg': 'image/svg+xml',
 };
 
-function inferImageContentType(url: string, responseType: string | null): string {
+function inferImageContentTypeFromUrl(url: string, responseType: string | null): string {
   if (responseType && responseType.startsWith('image/')) {
     return responseType;
   }
@@ -177,6 +177,52 @@ function inferImageContentType(url: string, responseType: string | null): string
   }
 
   return responseType ?? 'application/octet-stream';
+}
+
+function inferImageContentTypeFromBuffer(buffer: Buffer): string | null {
+  if (buffer.length < 4) {
+    return null;
+  }
+
+  if (buffer[0] === 0x89 && buffer[1] === 0x50 && buffer[2] === 0x4e && buffer[3] === 0x47) {
+    return 'image/png';
+  }
+  if (buffer[0] === 0xff && buffer[1] === 0xd8 && buffer[2] === 0xff) {
+    return 'image/jpeg';
+  }
+  if (
+    buffer.toString('ascii', 0, 6) === 'GIF87a' ||
+    buffer.toString('ascii', 0, 6) === 'GIF89a'
+  ) {
+    return 'image/gif';
+  }
+  if (
+    buffer.toString('ascii', 0, 4) === 'RIFF' &&
+    buffer.toString('ascii', 8, 12) === 'WEBP'
+  ) {
+    return 'image/webp';
+  }
+
+  const head = buffer.toString('ascii', 0, Math.min(buffer.length, 256)).trim();
+  if (head.startsWith('<?xml') || head.startsWith('<svg')) {
+    return 'image/svg+xml';
+  }
+
+  return null;
+}
+
+function inferImageContentType(url: string, responseType: string | null, buffer: Buffer): string {
+  const fromUrl = inferImageContentTypeFromUrl(url, responseType);
+  if (fromUrl.startsWith('image/')) {
+    return fromUrl;
+  }
+
+  const fromBuffer = inferImageContentTypeFromBuffer(buffer);
+  if (fromBuffer) {
+    return fromBuffer;
+  }
+
+  return fromUrl;
 }
 
 function isAcceptableImageContentType(contentType: string): boolean {
@@ -203,15 +249,15 @@ async function downloadIcon(url: string): Promise<{ buffer: Buffer; contentType:
   }
 
   const rawContentType = response.headers.get('content-type')?.split(';')[0]?.trim() ?? null;
-  const contentType = inferImageContentType(url, rawContentType);
-  if (!isAcceptableImageContentType(rawContentType ?? contentType)) {
-    throw new Error(`非法图标 Content-Type: ${rawContentType ?? contentType}`);
-  }
-
   const arrayBuffer = await response.arrayBuffer();
   const buffer = Buffer.from(arrayBuffer);
   if (buffer.length > MAX_ICON_BYTES) {
     throw new Error(`图标超过最大限制 ${String(MAX_ICON_BYTES)} 字节`);
+  }
+
+  const contentType = inferImageContentType(url, rawContentType, buffer);
+  if (!isAcceptableImageContentType(rawContentType ?? contentType)) {
+    throw new Error(`非法图标 Content-Type: ${rawContentType ?? contentType}`);
   }
 
   return { buffer, contentType };
