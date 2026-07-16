@@ -315,7 +315,7 @@ export async function findAppBySlug(pool: Pool, slug: string): Promise<DbApp | u
 
 export async function listEnabledApps(pool: Pool): Promise<YiaiApp[]> {
   const result = await pool.query<DbApp>(
-    `SELECT id, slug, name, description, icon, icon_type, icon_background, sort_order,
+    `SELECT id, slug, name, description, icon, icon_type, icon_background, api_base_url, api_key, sort_order,
             requires_new_conversation_inputs, created_at, updated_at
      FROM yiai_apps
      WHERE enabled = true

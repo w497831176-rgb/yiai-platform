@@ -151,6 +151,45 @@ describe('App Routes', () => {
     expect(dunjiazi?.icon_type).toBeNull();
   });
 
+  it('resolves icon_url from upstream /site for image-type apps in apps list', async () => {
+    const app = await buildTestApp(pool);
+    const token = await loginUser(app, 'test_user', 'testpass');
+
+    await createTestApp(pool, {
+      slug: 'image-app',
+      name: 'Image App',
+      icon: '07e890ea-6d8a-4f87-ae17-25ccf4b62d3b',
+      icon_type: 'image',
+      sort_order: 4,
+    });
+
+    fetchMock.mockResolvedValueOnce(
+      new Response(
+        JSON.stringify({
+          icon_type: 'image',
+          icon: '07e890ea-6d8a-4f87-ae17-25ccf4b62d3b',
+          icon_url: 'https://yiai.example.com/files/preview.png',
+        })
+      )
+    );
+
+    const response = await app.inject({
+      method: 'GET',
+      url: '/api/apps',
+      headers: { Authorization: `Bearer ${token}` },
+    });
+
+    expect(response.statusCode).toBe(200);
+    const body = JSON.parse(response.body) as YiaiApp[];
+    const imageApp = body.find((a) => a.slug === 'image-app');
+    expect(imageApp).toBeDefined();
+    expect(imageApp?.icon_type).toBe('image');
+    expect(imageApp?.icon).toBeNull();
+    expect(imageApp?.icon_url).toBe('https://yiai.example.com/files/preview.png');
+    expect(imageApp).not.toHaveProperty('api_key');
+    expect(imageApp).not.toHaveProperty('api_base_url');
+  });
+
   it('returns bootstrap without api_key', async () => {
     fetchMock
       .mockResolvedValueOnce(new Response(JSON.stringify({ name: 'Upstream Name', description: 'Upstream desc' })))
