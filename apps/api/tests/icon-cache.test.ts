@@ -98,7 +98,8 @@ describe('Icon Cache', () => {
       'SELECT id, slug, api_base_url, api_key FROM yiai_apps WHERE id = $1',
       [appId]
     );
-    await refreshAppIconCache(pool, appRow.rows[0]);
+    const refreshResult = await refreshAppIconCache(pool, appRow.rows[0]);
+    expect(refreshResult.success).toBe(true);
 
     const row = await pool.query<{
       name: string;
@@ -211,7 +212,8 @@ describe('Icon Cache', () => {
       'SELECT id, slug, api_base_url, api_key FROM yiai_apps WHERE id = $1',
       [appId]
     );
-    await refreshAppIconCache(pool, appRow.rows[0]);
+    const result = await refreshAppIconCache(pool, appRow.rows[0]);
+    expect(result.success).toBe(false);
 
     const row = await pool.query<{
       icon_cache_filename: string | null;
@@ -276,42 +278,80 @@ describe('Icon Cache', () => {
     await cleanIconCache('new-image-app');
   });
 
-  it('refreshAllEnabledAppIcons refreshes all enabled apps', async () => {
+  it('refreshAllEnabledAppIcons counts success and failure while preserving old cache on failure', async () => {
     await createTestApp(pool, {
-      slug: 'refresh-all-1',
+      slug: 'refresh-success-app',
       api_base_url: 'https://yiai.example.com/v1',
       api_key: 'key1',
     });
-    await createTestApp(pool, {
-      slug: 'refresh-all-2',
+
+    const failureAppId = await createTestApp(pool, {
+      slug: 'refresh-failure-app',
       api_base_url: 'https://yiai.example.com/v1',
       api_key: 'key2',
+      icon_type: 'image',
+      icon: 'old-icon-uuid',
+      icon_cache_filename: 'refresh-failure-app',
+      icon_cache_content_type: 'image/png',
+      icon_cached_at: new Date('2026-01-01T00:00:00.000Z'),
+    });
+
+    await createTestApp(pool, {
+      slug: 'refresh-disabled-app',
+      api_base_url: 'https://yiai.example.com/v1',
+      api_key: 'key3',
       enabled: false,
     });
 
+    const cacheDir = createIconCacheDir();
+    await fs.mkdir(cacheDir, { recursive: true });
+    await fs.writeFile(path.join(cacheDir, 'refresh-failure-app'), Buffer.from('old-icon'));
+
     fetchMock
       .mockResolvedValueOnce(
-        new Response(JSON.stringify({ title: 'One', icon_type: 'image', icon_url: 'https://cdn.example.com/1.png' }))
+        new Response(
+          JSON.stringify({ title: 'Success App', icon_type: 'image', icon_url: 'https://cdn.example.com/success.png' })
+        )
       )
       .mockResolvedValueOnce(
-        new Response(Buffer.from('icon-1'), { headers: { 'content-type': 'image/png' } })
-      );
+        new Response(Buffer.from('success-icon'), { headers: { 'content-type': 'image/png' } })
+      )
+      .mockRejectedValueOnce(new Error('network error'));
 
+    const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
     await refreshAllEnabledAppIcons(pool);
+    expect(logSpy).toHaveBeenCalledWith('[icon-cache] 完成每日刷新: 成功 1, 失败 1');
+    logSpy.mockRestore();
 
-    const row = await pool.query<{ icon_cache_filename: string | null }>(
+    const successRow = await pool.query<{ icon_cache_filename: string | null }>(
       'SELECT icon_cache_filename FROM yiai_apps WHERE slug = $1',
-      ['refresh-all-1']
+      ['refresh-success-app']
     );
-    expect(row.rows[0].icon_cache_filename).toBe('refresh-all-1');
+    expect(successRow.rows[0].icon_cache_filename).toBe('refresh-success-app');
+
+    const failureRow = await pool.query<{
+      icon_cache_filename: string | null;
+      icon_cache_content_type: string | null;
+      icon_cached_at: Date | null;
+    }>(
+      'SELECT icon_cache_filename, icon_cache_content_type, icon_cached_at FROM yiai_apps WHERE id = $1',
+      [failureAppId]
+    );
+    expect(failureRow.rows[0].icon_cache_filename).toBe('refresh-failure-app');
+    expect(failureRow.rows[0].icon_cache_content_type).toBe('image/png');
+    expect(failureRow.rows[0].icon_cached_at).not.toBeNull();
+
+    const failureContent = await fs.readFile(path.join(cacheDir, 'refresh-failure-app'), 'utf-8');
+    expect(failureContent).toBe('old-icon');
 
     const disabled = await pool.query<{ icon_cache_filename: string | null }>(
       'SELECT icon_cache_filename FROM yiai_apps WHERE slug = $1',
-      ['refresh-all-2']
+      ['refresh-disabled-app']
     );
     expect(disabled.rows[0].icon_cache_filename).toBeNull();
 
-    await cleanIconCache('refresh-all-1');
+    await cleanIconCache('refresh-success-app');
+    await cleanIconCache('refresh-failure-app');
   });
 
   it('getLocalIconUrl returns null for missing cache fields', () => {

@@ -263,10 +263,10 @@ async function downloadIcon(url: string): Promise<{ buffer: Buffer; contentType:
   return { buffer, contentType };
 }
 
-export async function refreshAppIconCache(pool: Pool, app: CacheableApp): Promise<void> {
+export async function refreshAppIconCache(pool: Pool, app: CacheableApp): Promise<{ success: boolean }> {
   const slug = sanitizeSlug(app.slug);
   if (!slug) {
-    return;
+    return { success: false };
   }
 
   const baseUrl = app.api_base_url.replace(/\/$/, '');
@@ -276,7 +276,7 @@ export async function refreshAppIconCache(pool: Pool, app: CacheableApp): Promis
     siteInfo = pickSiteInfo(site);
   } catch (err) {
     console.error(`[icon-cache] 刷新应用 ${app.slug} /site 失败:`, err instanceof Error ? err.message : err);
-    return;
+    return { success: false };
   }
 
   const name =
@@ -305,7 +305,7 @@ export async function refreshAppIconCache(pool: Pool, app: CacheableApp): Promis
       `[icon-cache] 更新应用 ${app.slug} 元数据失败:`,
       err instanceof Error ? err.message : err
     );
-    return;
+    return { success: false };
   }
 
   if (iconFields.icon_type !== 'image' || !iconFields.icon_url) {
@@ -324,8 +324,9 @@ export async function refreshAppIconCache(pool: Pool, app: CacheableApp): Promis
         `[icon-cache] 清除应用 ${app.slug} 图片缓存字段失败:`,
         err instanceof Error ? err.message : err
       );
+      return { success: false };
     }
-    return;
+    return { success: true };
   }
 
   let buffer: Buffer;
@@ -340,7 +341,7 @@ export async function refreshAppIconCache(pool: Pool, app: CacheableApp): Promis
       err instanceof Error ? err.message : err
     );
     // 保留已有缓存文件和数据库缓存字段
-    return;
+    return { success: false };
   }
 
   try {
@@ -354,7 +355,7 @@ export async function refreshAppIconCache(pool: Pool, app: CacheableApp): Promis
       `[icon-cache] 写入应用 ${app.slug} 图标文件失败:`,
       err instanceof Error ? err.message : err
     );
-    return;
+    return { success: false };
   }
 
   try {
@@ -371,7 +372,10 @@ export async function refreshAppIconCache(pool: Pool, app: CacheableApp): Promis
       `[icon-cache] 更新应用 ${app.slug} 图标缓存记录失败:`,
       err instanceof Error ? err.message : err
     );
+    return { success: false };
   }
+
+  return { success: true };
 }
 
 export function getLocalIconUrl(app: IconCacheFields | null | undefined): string | null {
@@ -421,17 +425,21 @@ export async function serveIconFile(slug: string, pool: Pool, reply: FastifyRepl
 }
 
 export async function refreshAllEnabledAppIcons(pool: Pool): Promise<void> {
-  const result = await pool.query<CacheableApp>(
+  const appsResult = await pool.query<CacheableApp>(
     'SELECT id, slug, api_base_url, api_key FROM yiai_apps WHERE enabled = true'
   );
 
   let success = 0;
   let failed = 0;
 
-  for (const app of result.rows) {
+  for (const app of appsResult.rows) {
     try {
-      await refreshAppIconCache(pool, app);
-      success += 1;
+      const refreshResult = await refreshAppIconCache(pool, app);
+      if (refreshResult.success) {
+        success += 1;
+      } else {
+        failed += 1;
+      }
     } catch (err) {
       failed += 1;
       console.error(

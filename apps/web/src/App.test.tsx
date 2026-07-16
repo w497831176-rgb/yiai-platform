@@ -114,27 +114,6 @@ describe('AdminAppsTab', () => {
       );
     }
 
-    if (url.endsWith('/apps') && method === 'GET') {
-      return Promise.resolve(
-        new Response(
-          JSON.stringify([
-            {
-              id: 'app-1',
-              slug: 'test-app',
-              name: 'Test App',
-              description: null,
-              icon: null,
-              icon_type: null,
-              icon_url: null,
-              icon_background: null,
-              sort_order: 1,
-              requires_new_conversation_inputs: false,
-            },
-          ])
-        )
-      );
-    }
-
     if (url.endsWith('/admin/apps') && method === 'GET') {
       return Promise.resolve(
         new Response(
@@ -151,6 +130,42 @@ describe('AdminAppsTab', () => {
               api_base_url: 'https://yiai.example.com/v1',
               api_key_configured: true,
               enabled: true,
+              sort_order: 1,
+              requires_new_conversation_inputs: false,
+            },
+            {
+              id: 'app-2',
+              slug: 'input-app',
+              name: 'Input App',
+              description: null,
+              icon: null,
+              icon_type: null,
+              icon_url: null,
+              icon_background: null,
+              api_base_url: 'https://yiai.example.com/v1',
+              api_key_configured: true,
+              enabled: true,
+              sort_order: 2,
+              requires_new_conversation_inputs: true,
+            },
+          ])
+        )
+      );
+    }
+
+    if (url.endsWith('/apps') && method === 'GET' && !url.includes('/admin')) {
+      return Promise.resolve(
+        new Response(
+          JSON.stringify([
+            {
+              id: 'app-1',
+              slug: 'test-app',
+              name: 'Test App',
+              description: null,
+              icon: null,
+              icon_type: null,
+              icon_url: null,
+              icon_background: null,
               sort_order: 1,
               requires_new_conversation_inputs: false,
             },
@@ -178,6 +193,18 @@ describe('AdminAppsTab', () => {
             id: 'app-1',
             slug: 'test-app',
             name: 'Test App',
+          })
+        )
+      );
+    }
+
+    if (url.endsWith('/admin/apps/app-1') && method === 'PATCH') {
+      return Promise.resolve(
+        new Response(
+          JSON.stringify({
+            id: 'app-1',
+            slug: 'test-app',
+            name: 'Test App Updated',
           })
         )
       );
@@ -248,7 +275,7 @@ describe('AdminAppsTab', () => {
       expect(body.api_key).toBe('secret-api-key');
       expect(body.sort_order).toBe(5);
       expect(body.enabled).toBe(true);
-      expect(body.requires_new_conversation_inputs).toBe(false);
+      expect(body).not.toHaveProperty('requires_new_conversation_inputs');
     });
 
     await waitFor(() => {
@@ -272,7 +299,7 @@ describe('AdminAppsTab', () => {
     fireEvent.click(screen.getByRole('button', { name: '应用管理' }));
 
     await waitFor(() => {
-      expect(screen.getByRole('button', { name: '同步 YIAI 信息' })).toBeInTheDocument();
+      expect(screen.getAllByRole('button', { name: '同步 YIAI 信息' }).length).toBeGreaterThan(0);
     });
   });
 
@@ -292,10 +319,10 @@ describe('AdminAppsTab', () => {
     fireEvent.click(screen.getByRole('button', { name: '应用管理' }));
 
     await waitFor(() => {
-      expect(screen.getByRole('button', { name: '同步 YIAI 信息' })).toBeInTheDocument();
+      expect(screen.getAllByRole('button', { name: '同步 YIAI 信息' }).length).toBeGreaterThan(0);
     });
 
-    fireEvent.click(screen.getByRole('button', { name: '同步 YIAI 信息' }));
+    fireEvent.click(screen.getAllByRole('button', { name: '同步 YIAI 信息' })[0]);
 
     await waitFor(() => {
       const syncCall = fetchMock.mock.calls.find(([url, init]) => {
@@ -308,6 +335,106 @@ describe('AdminAppsTab', () => {
 
     await waitFor(() => {
       expect(screen.getByText('应用同步成功')).toBeInTheDocument();
+    });
+  });
+
+  it('shows input collection status labels in app list', async () => {
+    render(<App />);
+
+    await waitFor(() => {
+      expect(screen.getByText('应用中心')).toBeInTheDocument();
+    });
+
+    fireEvent.click(screen.getByRole('button', { name: '管理后台' }));
+
+    await waitFor(() => {
+      expect(screen.getByRole('button', { name: '应用管理' })).toBeInTheDocument();
+    });
+
+    fireEvent.click(screen.getByRole('button', { name: '应用管理' }));
+
+    await waitFor(() => {
+      expect(screen.getByText('无需采集')).toBeInTheDocument();
+      expect(screen.getByText('新对话采集信息')).toBeInTheDocument();
+    });
+  });
+
+  it('edit modal shows disabled checkbox and hint text', async () => {
+    render(<App />);
+
+    await waitFor(() => {
+      expect(screen.getByText('应用中心')).toBeInTheDocument();
+    });
+
+    fireEvent.click(screen.getByRole('button', { name: '管理后台' }));
+
+    await waitFor(() => {
+      expect(screen.getByRole('button', { name: '应用管理' })).toBeInTheDocument();
+    });
+
+    fireEvent.click(screen.getByRole('button', { name: '应用管理' }));
+
+    await waitFor(() => {
+      expect(screen.getAllByRole('button', { name: '编辑' })[0]).toBeInTheDocument();
+    });
+
+    fireEvent.click(screen.getAllByRole('button', { name: '编辑' })[0]);
+
+    await waitFor(() => {
+      expect(screen.getByRole('heading', { name: '编辑应用：test-app' })).toBeInTheDocument();
+    });
+
+    expect(
+      screen.getByText('由 YIAI Chatflow 的用户输入表单自动识别；请点击“同步 YIAI 信息”更新。')
+    ).toBeInTheDocument();
+
+    const checkbox = screen.getByRole('checkbox', { name: '每次新对话采集用户信息' });
+    expect(checkbox).toBeDisabled();
+    expect(checkbox).not.toBeChecked();
+  });
+
+  it('edit form submit does not send requires_new_conversation_inputs', async () => {
+    render(<App />);
+
+    await waitFor(() => {
+      expect(screen.getByText('应用中心')).toBeInTheDocument();
+    });
+
+    fireEvent.click(screen.getByRole('button', { name: '管理后台' }));
+
+    await waitFor(() => {
+      expect(screen.getByRole('button', { name: '应用管理' })).toBeInTheDocument();
+    });
+
+    fireEvent.click(screen.getByRole('button', { name: '应用管理' }));
+
+    await waitFor(() => {
+      expect(screen.getAllByRole('button', { name: '编辑' })[0]).toBeInTheDocument();
+    });
+
+    fireEvent.click(screen.getAllByRole('button', { name: '编辑' })[0]);
+
+    await waitFor(() => {
+      expect(screen.getByRole('heading', { name: '编辑应用：test-app' })).toBeInTheDocument();
+    });
+
+    fireEvent.click(screen.getByRole('button', { name: '保存' }));
+
+    await waitFor(() => {
+      const patchCall = fetchMock.mock.calls.find(([url, init]) => {
+        const callUrl = typeof url === 'string' ? url : url.url;
+        const callMethod = init?.method ?? 'GET';
+        return callUrl.endsWith('/admin/apps/app-1') && callMethod === 'PATCH';
+      });
+      expect(patchCall).toBeDefined();
+      if (!patchCall) return;
+      const [, init] = patchCall;
+      const body = JSON.parse(init?.body as string) as Record<string, unknown>;
+      expect(body).not.toHaveProperty('requires_new_conversation_inputs');
+    });
+
+    await waitFor(() => {
+      expect(screen.getByText('应用 test-app 已更新')).toBeInTheDocument();
     });
   });
 });

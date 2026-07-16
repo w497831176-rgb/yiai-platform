@@ -72,7 +72,8 @@ export interface AppMetadata extends IconFields {
   user_input_form: UserInputFormField[] | null;
 }
 
-interface UpstreamAppMetadata extends AppMetadata {
+export interface UpstreamAppMetadata extends AppMetadata {
+  requires_new_conversation_inputs: boolean;
   opening_statement: string | null;
   suggested_questions: string[] | null;
 }
@@ -277,15 +278,40 @@ async function fetchUpstreamAppMetadata(baseUrl: string, apiKey: string): Promis
     null;
 
   const iconFields = extractIconFields(info, siteInfo);
+  const user_input_form = normalizeUserInputForm(parameters.user_input_form);
 
   return {
     name,
     description,
     ...iconFields,
-    user_input_form: normalizeUserInputForm(parameters.user_input_form),
+    user_input_form,
+    requires_new_conversation_inputs: (user_input_form ?? []).length > 0,
     opening_statement: parameters.opening_statement ?? null,
     suggested_questions: parameters.suggested_questions ?? null,
   };
+}
+
+export async function syncAppMetadata(
+  poolOrBaseUrl: Pool | string,
+  slugOrApiKey: string
+): Promise<UpstreamAppMetadata> {
+  let baseUrl: string;
+  let apiKey: string;
+
+  if (typeof poolOrBaseUrl === 'string') {
+    baseUrl = poolOrBaseUrl;
+    apiKey = slugOrApiKey;
+  } else {
+    const result = await poolOrBaseUrl.query<DbApp>('SELECT * FROM yiai_apps WHERE slug = $1', [slugOrApiKey]);
+    const app = result.rows.at(0);
+    if (!app) {
+      throw new YiaiAppNotFoundError(slugOrApiKey);
+    }
+    baseUrl = app.api_base_url;
+    apiKey = app.api_key;
+  }
+
+  return fetchUpstreamAppMetadata(baseUrl, apiKey);
 }
 
 export async function findAppBySlug(pool: Pool, slug: string): Promise<DbApp | undefined> {

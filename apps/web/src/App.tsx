@@ -1547,7 +1547,6 @@ function AdminAppsTab() {
       slug: createForm.slug.trim(),
       api_base_url: createForm.api_base_url.trim(),
       api_key: createForm.api_key,
-      requires_new_conversation_inputs: createForm.requires_new_conversation_inputs,
       enabled: createForm.enabled,
       sort_order: createForm.sort_order,
     };
@@ -1609,7 +1608,6 @@ function AdminAppsTab() {
       api_base_url: getValue('api_base_url'),
       enabled: getChecked('enabled'),
       sort_order: parseInt(getValue('sort_order') || '0', 10),
-      requires_new_conversation_inputs: getChecked('requires_new_conversation_inputs'),
     };
     if (newApiKey.trim()) {
       body.api_key = newApiKey.trim();
@@ -1665,7 +1663,7 @@ function AdminAppsTab() {
                 <td>{app.name}</td>
                 <td>{app.api_key_configured ? '已配置' : '未配置'}</td>
                 <td>{app.enabled ? '是' : '否'}</td>
-                <td>{app.requires_new_conversation_inputs ? '是' : '否'}</td>
+                <td>{app.requires_new_conversation_inputs ? '新对话采集信息' : '无需采集'}</td>
                 <td>
                   <button className="secondary" onClick={() => { setEditingApp(app); }}>
                     编辑
@@ -1734,16 +1732,6 @@ function AdminAppsTab() {
               <label className="checkbox">
                 <input
                   type="checkbox"
-                  checked={createForm.requires_new_conversation_inputs}
-                  onChange={(e) => {
-                    setCreateForm((prev) => ({ ...prev, requires_new_conversation_inputs: e.target.checked }));
-                  }}
-                />
-                每次新建对话采集变量信息
-              </label>
-              <label className="checkbox">
-                <input
-                  type="checkbox"
                   checked={createForm.enabled}
                   onChange={(e) => {
                     setCreateForm((prev) => ({ ...prev, enabled: e.target.checked }));
@@ -1805,9 +1793,13 @@ function AdminAppsTab() {
                   name="requires_new_conversation_inputs"
                   type="checkbox"
                   defaultChecked={editingApp.requires_new_conversation_inputs}
+                  disabled
                 />
                 每次新对话采集用户信息
               </label>
+              <p className="input-hint">
+                由 YIAI Chatflow 的用户输入表单自动识别；请点击“同步 YIAI 信息”更新。
+              </p>
               <div className="modal-actions">
                 <button type="button" className="secondary" onClick={() => { setEditingApp(null); }}>
                   取消

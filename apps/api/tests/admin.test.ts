@@ -279,11 +279,52 @@ describe('Admin Routes', () => {
     expect(synced.icon).toBe('🔄');
   });
 
-  it('sync endpoint preserves requires_new_conversation_inputs by default', async () => {
+  it('sync updates requires_new_conversation_inputs from false to true', async () => {
     const app = await buildApp(pool);
     await createTestUser(pool, 'admin_user', 'admin', 'testpass');
     const appId = await createTestApp(pool, {
-      slug: 'sync-flags',
+      slug: 'sync-false-to-true',
+      name: 'Flag App',
+      requires_new_conversation_inputs: false,
+      api_key: 'key',
+    });
+
+    fetchMock
+      .mockResolvedValueOnce(new Response(JSON.stringify({ name: 'Flag Name' })))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ title: 'Flag Site' })))
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            user_input_form: [{ type: 'text-input', label: 'Name', variable: 'name', required: true }],
+          })
+        )
+      )
+      .mockResolvedValueOnce(new Response(JSON.stringify({ title: 'Flag Site' })));
+
+    const token = await login(app, 'admin_user', 'testpass');
+
+    const syncResponse = await app.inject({
+      method: 'POST',
+      url: `/api/admin/apps/${appId}/sync`,
+      headers: { Authorization: `Bearer ${token}` },
+    });
+
+    expect(syncResponse.statusCode).toBe(200);
+    const synced = JSON.parse(syncResponse.body) as Record<string, unknown>;
+    expect(synced.requires_new_conversation_inputs).toBe(true);
+
+    const dbResult = await pool.query<{ requires_new_conversation_inputs: boolean }>(
+      'SELECT requires_new_conversation_inputs FROM yiai_apps WHERE id = $1',
+      [appId]
+    );
+    expect(dbResult.rows[0].requires_new_conversation_inputs).toBe(true);
+  });
+
+  it('sync updates requires_new_conversation_inputs from true to false', async () => {
+    const app = await buildApp(pool);
+    await createTestUser(pool, 'admin_user', 'admin', 'testpass');
+    const appId = await createTestApp(pool, {
+      slug: 'sync-true-to-false',
       name: 'Flag App',
       requires_new_conversation_inputs: true,
       api_key: 'key',
@@ -305,7 +346,13 @@ describe('Admin Routes', () => {
 
     expect(syncResponse.statusCode).toBe(200);
     const synced = JSON.parse(syncResponse.body) as Record<string, unknown>;
-    expect(synced.requires_new_conversation_inputs).toBe(true);
+    expect(synced.requires_new_conversation_inputs).toBe(false);
+
+    const dbResult = await pool.query<{ requires_new_conversation_inputs: boolean }>(
+      'SELECT requires_new_conversation_inputs FROM yiai_apps WHERE id = $1',
+      [appId]
+    );
+    expect(dbResult.rows[0].requires_new_conversation_inputs).toBe(false);
   });
 
   it('syncs image icon_url from upstream site and caches locally', async () => {

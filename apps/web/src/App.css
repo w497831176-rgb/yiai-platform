@@ -754,6 +754,13 @@ label.checkbox input {
   font-size: 0.875rem;
 }
 
+.input-hint {
+  margin: -0.5rem 0 1rem;
+  font-size: 0.8125rem;
+  color: #666;
+  line-height: 1.5;
+}
+
 @media (max-width: 640px) {
   .user-actions {
     flex-wrap: wrap;

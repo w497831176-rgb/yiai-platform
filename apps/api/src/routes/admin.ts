@@ -2,7 +2,7 @@ import type { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify';
 import type { Pool } from 'pg';
 import { authenticate } from '../auth/decorator.js';
 import { ensureDailyGift, getAllUserAccounts, getLedgerEntries, rechargeTokens } from '../services/token-account.js';
-import { fetchAppMetadata, toSafeApp, YiaiUpstreamError, type AppMetadata } from '../services/yiai.js';
+import { syncAppMetadata, fetchAppMetadata, toSafeApp, YiaiUpstreamError, type AppMetadata, type UpstreamAppMetadata } from '../services/yiai.js';
 import { getLocalIconUrl, refreshAppIconCache } from '../services/icon-cache.js';
 
 interface AdminParams {
@@ -177,19 +177,15 @@ export function adminRoutes(fastify: FastifyInstance, options: { pool: Pool }) {
       return reply.status(400).send({ error: 'API Key 不能为空' });
     }
 
-    let metadata;
+    let metadata: UpstreamAppMetadata;
     try {
-      metadata = await fetchAppMetadata(body.api_base_url, body.api_key);
+      metadata = await syncAppMetadata(body.api_base_url, body.api_key);
     } catch (err) {
       if (err instanceof YiaiUpstreamError) {
         return reply.status(400).send({ error: `同步应用元数据失败：${err.message}` });
       }
       throw err;
     }
-
-    const hasUserInputForm = Array.isArray(metadata.user_input_form) && metadata.user_input_form.length > 0;
-    const requiresNewConversationInputs =
-      body.requires_new_conversation_inputs !== undefined ? body.requires_new_conversation_inputs : hasUserInputForm;
 
     const iconFields = extractStoredIconFields(metadata, body);
 
@@ -212,7 +208,7 @@ export function adminRoutes(fastify: FastifyInstance, options: { pool: Pool }) {
           body.api_key,
           body.enabled ?? true,
           body.sort_order ?? 0,
-          requiresNewConversationInputs,
+          metadata.requires_new_conversation_inputs,
         ]
       );
       const row = result.rows[0] as AdminAppRow;
@@ -230,7 +226,6 @@ export function adminRoutes(fastify: FastifyInstance, options: { pool: Pool }) {
   fastify.post('/admin/apps/:id/sync', { preHandler: authenticate }, async (request, reply) => {
     if (!assertAdmin(request, reply)) return;
     const params = request.params as AdminParams;
-    const body = (request.body ?? {}) as AppBody;
 
     const existing = await pool.query<AdminAppRow>('SELECT * FROM yiai_apps WHERE id = $1', [params.id]);
     const app = existing.rows.at(0);
@@ -238,9 +233,9 @@ export function adminRoutes(fastify: FastifyInstance, options: { pool: Pool }) {
       return reply.status(404).send({ error: '应用不存在或无权访问' });
     }
 
-    let metadata;
+    let metadata: UpstreamAppMetadata;
     try {
-      metadata = await fetchAppMetadata(pool, app.slug);
+      metadata = await syncAppMetadata(pool, app.slug);
     } catch (err) {
       if (err instanceof YiaiUpstreamError) {
         return reply.status(400).send({ error: `同步应用元数据失败：${err.message}` });
@@ -262,9 +257,7 @@ export function adminRoutes(fastify: FastifyInstance, options: { pool: Pool }) {
     addField('icon', iconFields.icon ?? app.icon);
     addField('icon_type', iconFields.icon_type ?? app.icon_type);
     addField('icon_background', iconFields.icon_background ?? app.icon_background);
-    if (body.requires_new_conversation_inputs !== undefined) {
-      addField('requires_new_conversation_inputs', body.requires_new_conversation_inputs);
-    }
+    addField('requires_new_conversation_inputs', metadata.requires_new_conversation_inputs);
 
     fields.push('updated_at = NOW()');
     values.push(params.id);
