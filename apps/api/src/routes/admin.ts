@@ -2,7 +2,7 @@ import type { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify';
 import type { Pool } from 'pg';
 import { authenticate } from '../auth/decorator.js';
 import { ensureDailyGift, getAllUserAccounts, getLedgerEntries, rechargeTokens } from '../services/token-account.js';
-import { syncAppMetadata, fetchAppMetadata, toSafeApp, YiaiUpstreamError, type AppMetadata, type UpstreamAppMetadata } from '../services/yiai.js';
+import { syncAppMetadata, toSafeApp, YiaiUpstreamError, type UpstreamAppMetadata } from '../services/yiai.js';
 import { getLocalIconUrl, refreshAppIconCache } from '../services/icon-cache.js';
 
 interface AdminParams {
@@ -15,17 +15,22 @@ interface RechargeBody {
   note?: string;
 }
 
-interface AppBody {
+interface CreateAppBody {
   slug?: string;
-  name?: string;
-  description?: string;
-  icon?: string;
   api_base_url?: string;
   api_key?: string;
   enabled?: boolean;
   sort_order?: number;
-  requires_new_conversation_inputs?: boolean;
-  sync_metadata?: boolean;
+}
+
+interface UpdateAppSettingsBody {
+  enabled?: boolean;
+  sort_order?: number;
+}
+
+interface UpdateAppConnectionBody {
+  api_base_url?: string;
+  api_key?: string;
 }
 
 interface AdminAppRow {
@@ -48,10 +53,14 @@ interface AdminAppRow {
   icon_cached_at: Date | null;
 }
 
+const ADMIN_APP_COLUMNS = `id, slug, name, description, icon, icon_type, icon_background,
+  api_base_url, api_key, enabled, sort_order, requires_new_conversation_inputs,
+  created_at, updated_at, icon_cache_filename, icon_cache_content_type, icon_cached_at`;
+
 function assertAdmin(request: FastifyRequest, reply: FastifyReply): boolean {
   const user = request.user;
   if (!user) {
-    void reply.status(401).send({ error: '未登录' });
+    void reply.status(401).send({ error: '请先登录' });
     return false;
   }
   if (user.role !== 'admin') {
@@ -61,40 +70,134 @@ function assertAdmin(request: FastifyRequest, reply: FastifyReply): boolean {
   return true;
 }
 
-function inferIconType(icon: string | null): 'image' | 'emoji' | null {
-  if (!icon) {
-    return null;
-  }
-  if (/^\p{Extended_Pictographic}+$/u.test(icon)) {
-    return 'emoji';
-  }
-  return 'image';
-}
-
-function toAdminAppResponse(row: AdminAppRow): Record<string, unknown> {
-  return {
-    ...toSafeApp(row, getLocalIconUrl(row)),
-    api_base_url: row.api_base_url,
-    api_key_configured: typeof row.api_key === 'string' && row.api_key !== '',
-    enabled: row.enabled,
-  };
-}
-
 function isNonEmptyString(value: unknown): value is string {
   return typeof value === 'string' && value.trim() !== '';
 }
 
-function extractStoredIconFields(metadata: AppMetadata, body: AppBody) {
-  const icon = metadata.icon ?? body.icon ?? null;
-  let icon_type = metadata.icon_type;
-  if (!icon_type && icon) {
-    icon_type = inferIconType(icon);
+function isNonNegativeInteger(value: unknown): value is number {
+  return typeof value === 'number' && Number.isInteger(value) && value >= 0;
+}
+
+function normalizeBaseUrl(value: unknown): string | null {
+  if (!isNonEmptyString(value)) {
+    return null;
   }
+
+  const normalized = value.trim().replace(/\/+$/, '');
+  try {
+    const parsed = new URL(normalized);
+    if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
+      return null;
+    }
+  } catch {
+    return null;
+  }
+  return normalized;
+}
+
+function extractStoredIconFields(metadata: UpstreamAppMetadata) {
   return {
-    icon,
-    icon_type,
-    icon_background: metadata.icon_background ?? null,
+    icon: metadata.icon,
+    icon_type: metadata.icon_type,
+    icon_background: metadata.icon_background,
   };
+}
+
+function toAdminAppResponse(row: AdminAppRow, duplicateOfSlug: string | null = null): Record<string, unknown> {
+  return {
+    ...toSafeApp(row, getLocalIconUrl(row)),
+    api_base_url: row.api_base_url,
+    api_key_configured: row.api_key !== '',
+    enabled: row.enabled,
+    connection_duplicate_of_slug: duplicateOfSlug,
+  };
+}
+
+function getDuplicatePrimary(rows: AdminAppRow[], row: AdminAppRow): AdminAppRow | undefined {
+  const sameConnection = rows
+    .filter((candidate) => candidate.api_base_url === row.api_base_url && candidate.api_key === row.api_key)
+    .sort((a, b) => Number(b.enabled) - Number(a.enabled) || a.sort_order - b.sort_order || a.id.localeCompare(b.id));
+  return sameConnection[0]?.id === row.id ? undefined : sameConnection[0];
+}
+
+async function getAppById(pool: Pool, id: string): Promise<AdminAppRow | undefined> {
+  const result = await pool.query<AdminAppRow>(`SELECT ${ADMIN_APP_COLUMNS} FROM yiai_apps WHERE id = $1`, [id]);
+  return result.rows.at(0);
+}
+
+async function findConnectionDuplicate(
+  pool: Pool,
+  apiBaseUrl: string,
+  apiKey: string,
+  excludingId?: string
+): Promise<{ id: string; slug: string } | undefined> {
+  const result = await pool.query<{ id: string; slug: string }>(
+    `SELECT id, slug
+     FROM yiai_apps
+     WHERE api_base_url = $1
+       AND api_key = $2
+       ${excludingId ? 'AND id <> $3' : ''}
+     ORDER BY enabled DESC, sort_order ASC, created_at ASC
+     LIMIT 1`,
+    excludingId ? [apiBaseUrl, apiKey, excludingId] : [apiBaseUrl, apiKey]
+  );
+  return result.rows.at(0);
+}
+
+async function fetchMetadata(reply: FastifyReply, apiBaseUrl: string, apiKey: string): Promise<UpstreamAppMetadata | undefined> {
+  try {
+    return await syncAppMetadata(apiBaseUrl, apiKey);
+  } catch (err) {
+    if (err instanceof YiaiUpstreamError) {
+      await reply.status(400).send({ error: `YIAI 连接验证失败：${err.message}` });
+      return undefined;
+    }
+    throw err;
+  }
+}
+
+async function updateMetadata(
+  pool: Pool,
+  app: AdminAppRow,
+  metadata: UpstreamAppMetadata,
+  connection?: { apiBaseUrl: string; apiKey: string }
+): Promise<AdminAppRow> {
+  const iconFields = extractStoredIconFields(metadata);
+  const result = await pool.query<AdminAppRow>(
+    `UPDATE yiai_apps
+     SET name = $2,
+         description = $3,
+         icon = $4,
+         icon_type = $5,
+         icon_background = $6,
+         requires_new_conversation_inputs = $7,
+         api_base_url = COALESCE($8, api_base_url),
+         api_key = COALESCE($9, api_key),
+         updated_at = NOW()
+     WHERE id = $1
+     RETURNING ${ADMIN_APP_COLUMNS}`,
+    [
+      app.id,
+      metadata.name ?? app.name,
+      metadata.description,
+      iconFields.icon,
+      iconFields.icon_type,
+      iconFields.icon_background,
+      metadata.requires_new_conversation_inputs,
+      connection?.apiBaseUrl ?? null,
+      connection?.apiKey ?? null,
+    ]
+  );
+  return result.rows[0];
+}
+
+async function refreshAndLoadApp(pool: Pool, app: AdminAppRow): Promise<AdminAppRow> {
+  await refreshAppIconCache(pool, app);
+  const refreshed = await getAppById(pool, app.id);
+  if (!refreshed) {
+    throw new Error('应用更新后不存在');
+  }
+  return refreshed;
 }
 
 export function adminRoutes(fastify: FastifyInstance, options: { pool: Pool }) {
@@ -133,7 +236,7 @@ export function adminRoutes(fastify: FastifyInstance, options: { pool: Pool }) {
     if (!assertAdmin(request, reply)) return;
     const admin = request.user;
     if (!admin) {
-      return reply.status(401).send({ error: '未登录' });
+      return reply.status(401).send({ error: '请先登录' });
     }
     const params = request.params as AdminParams;
     const body = request.body as RechargeBody;
@@ -143,76 +246,65 @@ export function adminRoutes(fastify: FastifyInstance, options: { pool: Pool }) {
     }
 
     const account = await rechargeTokens(pool, params.userId, body.amount, admin.id, body.note);
-    return {
-      gift_tokens: account.gift_tokens,
-      recharge_tokens: account.recharge_tokens,
-    };
+    return { gift_tokens: account.gift_tokens, recharge_tokens: account.recharge_tokens };
   });
 
   fastify.get('/admin/apps', { preHandler: authenticate }, async (request, reply) => {
     if (!assertAdmin(request, reply)) return;
-    const result = await pool.query<AdminAppRow>(
-      `SELECT id, slug, name, description, icon, icon_type, icon_background, api_base_url, api_key, enabled, sort_order,
-              requires_new_conversation_inputs, created_at, updated_at,
-              icon_cache_filename, icon_cache_content_type, icon_cached_at
-       FROM yiai_apps
-       ORDER BY sort_order, id`
-    );
-    return result.rows.map(toAdminAppResponse);
+    const result = await pool.query<AdminAppRow>(`SELECT ${ADMIN_APP_COLUMNS} FROM yiai_apps ORDER BY sort_order, created_at`);
+    return result.rows.map((row) => toAdminAppResponse(row, getDuplicatePrimary(result.rows, row)?.slug ?? null));
   });
 
   fastify.post('/admin/apps', { preHandler: authenticate }, async (request, reply) => {
     if (!assertAdmin(request, reply)) return;
-    const body = request.body as AppBody;
+    const body = request.body as CreateAppBody;
+    const slug = isNonEmptyString(body.slug) ? body.slug.trim() : '';
+    const apiBaseUrl = normalizeBaseUrl(body.api_base_url);
 
-    if (!isNonEmptyString(body.slug)) {
-      return reply.status(400).send({ error: '应用标识不能为空' });
+    if (!/^[a-zA-Z0-9_-]+$/.test(slug)) {
+      return reply.status(400).send({ error: '应用标识只能包含字母、数字、下划线和连字符' });
     }
-    if (!isNonEmptyString(body.api_base_url)) {
-      return reply.status(400).send({ error: 'API Base URL 不能为空' });
+    if (!apiBaseUrl) {
+      return reply.status(400).send({ error: '请输入有效的 YIAI API Base URL' });
     }
     if (!isNonEmptyString(body.api_key)) {
-      return reply.status(400).send({ error: 'API Key 不能为空' });
+      return reply.status(400).send({ error: 'YIAI API Key 不能为空' });
+    }
+    if (body.sort_order !== undefined && !isNonNegativeInteger(body.sort_order)) {
+      return reply.status(400).send({ error: '排序必须为不小于 0 的整数' });
     }
 
-    let metadata: UpstreamAppMetadata;
-    try {
-      metadata = await syncAppMetadata(body.api_base_url, body.api_key);
-    } catch (err) {
-      if (err instanceof YiaiUpstreamError) {
-        return reply.status(400).send({ error: `同步应用元数据失败：${err.message}` });
-      }
-      throw err;
+    const duplicate = await findConnectionDuplicate(pool, apiBaseUrl, body.api_key);
+    if (duplicate) {
+      return reply.status(409).send({ error: `这套 YIAI 连接已经绑定到应用「${duplicate.slug}」，请编辑该应用，不要重复新增` });
     }
 
-    const iconFields = extractStoredIconFields(metadata, body);
+    const metadata = await fetchMetadata(reply, apiBaseUrl, body.api_key);
+    if (!metadata) return;
+    const iconFields = extractStoredIconFields(metadata);
 
     try {
-      const result = await pool.query(
-        `
-          INSERT INTO yiai_apps (slug, name, description, icon, icon_type, icon_background, api_base_url, api_key, enabled, sort_order, requires_new_conversation_inputs)
-          VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
-          RETURNING id, slug, name, description, icon, icon_type, icon_background, api_base_url, api_key, enabled, sort_order, requires_new_conversation_inputs, created_at, updated_at,
-                   icon_cache_filename, icon_cache_content_type, icon_cached_at
-        `,
+      const result = await pool.query<AdminAppRow>(
+        `INSERT INTO yiai_apps
+          (slug, name, description, icon, icon_type, icon_background, api_base_url, api_key, enabled, sort_order, requires_new_conversation_inputs)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+         RETURNING ${ADMIN_APP_COLUMNS}`,
         [
-          body.slug,
-          metadata.name ?? body.name ?? body.slug,
-          metadata.description ?? body.description ?? null,
+          slug,
+          metadata.name ?? slug,
+          metadata.description,
           iconFields.icon,
           iconFields.icon_type,
           iconFields.icon_background,
-          body.api_base_url,
+          apiBaseUrl,
           body.api_key,
           body.enabled ?? true,
           body.sort_order ?? 0,
           metadata.requires_new_conversation_inputs,
         ]
       );
-      const row = result.rows[0] as AdminAppRow;
-      await refreshAppIconCache(pool, row);
-      const refreshed = await pool.query<AdminAppRow>('SELECT * FROM yiai_apps WHERE id = $1', [row.id]);
-      return await reply.status(201).send(toAdminAppResponse(refreshed.rows[0]));
+      const refreshed = await refreshAndLoadApp(pool, result.rows[0]);
+      return await reply.status(201).send(toAdminAppResponse(refreshed));
     } catch (error) {
       if (error && typeof error === 'object' && 'code' in error && error.code === '23505') {
         return reply.status(409).send({ error: '应用标识已存在' });
@@ -224,123 +316,72 @@ export function adminRoutes(fastify: FastifyInstance, options: { pool: Pool }) {
   fastify.post('/admin/apps/:id/sync', { preHandler: authenticate }, async (request, reply) => {
     if (!assertAdmin(request, reply)) return;
     const params = request.params as AdminParams;
-
-    const existing = await pool.query<AdminAppRow>('SELECT * FROM yiai_apps WHERE id = $1', [params.id]);
-    const app = existing.rows.at(0);
+    const app = await getAppById(pool, params.id);
     if (!app) {
-      return reply.status(404).send({ error: '应用不存在或无权访问' });
+      return reply.status(404).send({ error: '应用不存在' });
     }
 
-    let metadata: UpstreamAppMetadata;
-    try {
-      metadata = await syncAppMetadata(pool, app.slug);
-    } catch (err) {
-      if (err instanceof YiaiUpstreamError) {
-        return reply.status(400).send({ error: `同步应用元数据失败：${err.message}` });
-      }
-      throw err;
+    const metadata = await fetchMetadata(reply, app.api_base_url, app.api_key);
+    if (!metadata) return;
+    const updated = await updateMetadata(pool, app, metadata);
+    const refreshed = await refreshAndLoadApp(pool, updated);
+    return toAdminAppResponse(refreshed);
+  });
+
+  fastify.put('/admin/apps/:id/connection', { preHandler: authenticate }, async (request, reply) => {
+    if (!assertAdmin(request, reply)) return;
+    const params = request.params as AdminParams;
+    const body = request.body as UpdateAppConnectionBody;
+    const app = await getAppById(pool, params.id);
+    if (!app) {
+      return reply.status(404).send({ error: '应用不存在' });
     }
 
-    const fields: string[] = [];
-    const values: unknown[] = [];
-
-    function addField(name: string, value: unknown) {
-      fields.push(`${name} = $${String(values.length + 1)}`);
-      values.push(value);
+    const apiBaseUrl = normalizeBaseUrl(body.api_base_url);
+    if (!apiBaseUrl) {
+      return reply.status(400).send({ error: '请输入有效的 YIAI API Base URL' });
+    }
+    const apiKey = isNonEmptyString(body.api_key) ? body.api_key : app.api_key;
+    const duplicate = await findConnectionDuplicate(pool, apiBaseUrl, apiKey, app.id);
+    if (duplicate) {
+      return reply.status(409).send({ error: `这套 YIAI 连接已经绑定到应用「${duplicate.slug}」，请编辑该应用，不要重复绑定` });
     }
 
-    addField('name', metadata.name ?? app.name);
-    addField('description', metadata.description ?? app.description);
-    const iconFields = extractStoredIconFields(metadata, {});
-    addField('icon', iconFields.icon ?? app.icon);
-    addField('icon_type', iconFields.icon_type ?? app.icon_type);
-    addField('icon_background', iconFields.icon_background ?? app.icon_background);
-    addField('requires_new_conversation_inputs', metadata.requires_new_conversation_inputs);
-
-    fields.push('updated_at = NOW()');
-    values.push(params.id);
-    const result = await pool.query(
-      `UPDATE yiai_apps SET ${fields.join(', ')} WHERE id = $${String(values.length)} RETURNING id, slug, name, description, icon, icon_type, icon_background, api_base_url, api_key, enabled, sort_order, requires_new_conversation_inputs, created_at, updated_at,
-       icon_cache_filename, icon_cache_content_type, icon_cached_at`,
-      values
-    );
-
-    const row = result.rows[0] as AdminAppRow;
-    await refreshAppIconCache(pool, row);
-    const refreshed = await pool.query<AdminAppRow>('SELECT * FROM yiai_apps WHERE id = $1', [row.id]);
-    return toAdminAppResponse(refreshed.rows[0]);
+    const metadata = await fetchMetadata(reply, apiBaseUrl, apiKey);
+    if (!metadata) return;
+    const updated = await updateMetadata(pool, app, metadata, { apiBaseUrl, apiKey });
+    const refreshed = await refreshAndLoadApp(pool, updated);
+    return toAdminAppResponse(refreshed);
   });
 
   fastify.patch('/admin/apps/:id', { preHandler: authenticate }, async (request, reply) => {
     if (!assertAdmin(request, reply)) return;
     const params = request.params as AdminParams;
-    const body = request.body as AppBody;
-
-    const existing = await pool.query<AdminAppRow>('SELECT * FROM yiai_apps WHERE id = $1', [params.id]);
-    const app = existing.rows.at(0);
+    const body = request.body as UpdateAppSettingsBody;
+    const app = await getAppById(pool, params.id);
     if (!app) {
-      return reply.status(404).send({ error: '应用不存在或无权访问' });
+      return reply.status(404).send({ error: '应用不存在' });
     }
 
-    const fields: string[] = [];
-    const values: unknown[] = [];
-
-    function addField(name: string, value: unknown) {
-      fields.push(`${name} = $${String(values.length + 1)}`);
-      values.push(value);
+    if (body.enabled === undefined && body.sort_order === undefined) {
+      return reply.status(400).send({ error: '只能修改启用状态或排序；名称、说明、图标和采集规则请同步 YIAI 信息' });
+    }
+    if (body.enabled !== undefined && typeof body.enabled !== 'boolean') {
+      return reply.status(400).send({ error: '启用状态格式错误' });
+    }
+    if (body.sort_order !== undefined && !isNonNegativeInteger(body.sort_order)) {
+      return reply.status(400).send({ error: '排序必须为不小于 0 的整数' });
     }
 
-    if (body.name !== undefined) addField('name', body.name);
-    if (body.description !== undefined) addField('description', body.description);
-    if (body.icon !== undefined) {
-      addField('icon', body.icon);
-      addField('icon_type', inferIconType(body.icon));
-    }
-    if (body.api_base_url !== undefined) addField('api_base_url', body.api_base_url);
-    if (body.enabled !== undefined) addField('enabled', body.enabled);
-    if (body.sort_order !== undefined) addField('sort_order', body.sort_order);
-    if (body.requires_new_conversation_inputs !== undefined) addField('requires_new_conversation_inputs', body.requires_new_conversation_inputs);
-    if (isNonEmptyString(body.api_key)) addField('api_key', body.api_key);
-
-    let shouldRefreshIcon = false;
-    if (body.sync_metadata) {
-      let metadata;
-      try {
-        metadata = await fetchAppMetadata(pool, app.slug);
-      } catch (err) {
-        if (err instanceof YiaiUpstreamError) {
-          return reply.status(400).send({ error: `同步应用元数据失败：${err.message}` });
-        }
-        throw err;
-      }
-      shouldRefreshIcon = true;
-      if (body.name === undefined) addField('name', metadata.name ?? app.name);
-      if (body.description === undefined) addField('description', metadata.description ?? app.description);
-      if (body.icon === undefined) {
-        const iconFields = extractStoredIconFields(metadata, {});
-        addField('icon', iconFields.icon ?? app.icon);
-        addField('icon_type', iconFields.icon_type ?? app.icon_type);
-        addField('icon_background', iconFields.icon_background ?? app.icon_background);
-      }
-    }
-
-    if (fields.length === 0) {
-      return reply.status(400).send({ error: '没有需要更新的字段' });
-    }
-
-    fields.push('updated_at = NOW()');
-    values.push(params.id);
-    const result = await pool.query(
-      `UPDATE yiai_apps SET ${fields.join(', ')} WHERE id = $${String(values.length)} RETURNING id, slug, name, description, icon, icon_type, icon_background, api_base_url, api_key, enabled, sort_order, requires_new_conversation_inputs, created_at, updated_at,
-       icon_cache_filename, icon_cache_content_type, icon_cached_at`,
-      values
+    const result = await pool.query<AdminAppRow>(
+      `UPDATE yiai_apps
+       SET enabled = COALESCE($2, enabled),
+           sort_order = COALESCE($3, sort_order),
+           updated_at = NOW()
+       WHERE id = $1
+       RETURNING ${ADMIN_APP_COLUMNS}`,
+      [app.id, body.enabled ?? null, body.sort_order ?? null]
     );
-
-    const row = result.rows[0] as AdminAppRow;
-    if (shouldRefreshIcon) {
-      await refreshAppIconCache(pool, row);
-    }
-    const refreshed = await pool.query<AdminAppRow>('SELECT * FROM yiai_apps WHERE id = $1', [row.id]);
-    return toAdminAppResponse(refreshed.rows[0]);
+    return toAdminAppResponse(result.rows[0]);
   });
 }

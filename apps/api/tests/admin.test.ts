@@ -172,83 +172,92 @@ describe('Admin Routes', () => {
 
     expect(createResponse.statusCode).toBe(400);
     const body = JSON.parse(createResponse.body) as { error: string };
-    expect(body.error).toContain('同步应用元数据失败');
+    expect(body.error).toContain('YIAI 连接验证失败');
 
     const dbResult = await pool.query('SELECT * FROM yiai_apps WHERE slug = $1', ['bad-app']);
     expect(dbResult.rows).toHaveLength(0);
   });
 
-  it('allows admin to update apps and respects empty api_key', async () => {
+  it('only allows platform settings to change through the settings endpoint', async () => {
     const app = await buildApp(pool);
     await createTestUser(pool, 'admin_user', 'admin', 'testpass');
+    const appId = await createTestApp(pool, {
+      slug: 'settings-app',
+      name: 'Upstream Name',
+      api_key: 'initial-key',
+      enabled: true,
+      sort_order: 1,
+    });
+    const token = await login(app, 'admin_user', 'testpass');
 
-    mockUpstreamMetadata(fetchMock);
+    const updateResponse = await app.inject({
+      method: 'PATCH',
+      url: `/api/admin/apps/${appId}`,
+      headers: { Authorization: `Bearer ${token}` },
+      payload: { enabled: false, sort_order: 9 },
+    });
+
+    expect(updateResponse.statusCode).toBe(200);
+    const dbResult = await pool.query<{ name: string; api_key: string; enabled: boolean; sort_order: number }>(
+      'SELECT name, api_key, enabled, sort_order FROM yiai_apps WHERE id = $1',
+      [appId]
+    );
+    expect(dbResult.rows[0]).toMatchObject({
+      name: 'Upstream Name',
+      api_key: 'initial-key',
+      enabled: false,
+      sort_order: 9,
+    });
+  });
+
+  it('updates a connection only after upstream verification and syncs its metadata', async () => {
+    const app = await buildApp(pool);
+    await createTestUser(pool, 'admin_user', 'admin', 'testpass');
+    const appId = await createTestApp(pool, { slug: 'connection-app', name: 'Old Name', api_key: 'old-key' });
+    mockUpstreamMetadata(fetchMock, {
+      site: { title: 'Verified Name', description: 'Verified Description', icon: '🧭' },
+      parameters: { user_input_form: [] },
+    });
 
     const token = await login(app, 'admin_user', 'testpass');
 
-    const createResponse = await app.inject({
+    const updateResponse = await app.inject({
+      method: 'PUT',
+      url: `/api/admin/apps/${appId}/connection`,
+      headers: { Authorization: `Bearer ${token}` },
+      payload: { api_base_url: 'https://verified.example.com/v1/', api_key: 'new-key' },
+    });
+
+    expect(updateResponse.statusCode).toBe(200);
+    const dbResult = await pool.query<{ api_base_url: string; api_key: string; name: string; description: string | null }>(
+      'SELECT api_base_url, api_key, name, description FROM yiai_apps WHERE id = $1',
+      [appId]
+    );
+    expect(dbResult.rows[0]).toMatchObject({
+      api_base_url: 'https://verified.example.com/v1',
+      api_key: 'new-key',
+      name: 'Verified Name',
+      description: 'Verified Description',
+    });
+  });
+
+  it('rejects a duplicate YIAI connection without exposing its API key', async () => {
+    const app = await buildApp(pool);
+    await createTestUser(pool, 'admin_user', 'admin', 'testpass');
+    await createTestApp(pool, { slug: 'bound-app', api_base_url: 'https://yiai.example.com/v1', api_key: 'same-key' });
+    const token = await login(app, 'admin_user', 'testpass');
+
+    const response = await app.inject({
       method: 'POST',
       url: '/api/admin/apps',
       headers: { Authorization: `Bearer ${token}` },
-      payload: {
-        slug: 'new-app',
-        api_base_url: 'https://yiai.example.com/v1',
-        api_key: 'initial-key',
-        sort_order: 1,
-      },
+      payload: { slug: 'duplicate-app', api_base_url: 'https://yiai.example.com/v1/', api_key: 'same-key' },
     });
 
-    expect(createResponse.statusCode).toBe(201);
-
-    const listResponse = await app.inject({
-      method: 'GET',
-      url: '/api/admin/apps',
-      headers: { Authorization: `Bearer ${token}` },
-    });
-    const apps = JSON.parse(listResponse.body) as Array<{ id: string; api_key_configured: boolean; name: string }>;
-    expect(apps[0].api_key_configured).toBe(true);
-
-    const updateResponse = await app.inject({
-      method: 'PATCH',
-      url: `/api/admin/apps/${apps[0].id}`,
-      headers: { Authorization: `Bearer ${token}` },
-      payload: { name: 'Updated App', api_key: 'new-key' },
-    });
-
-    expect(updateResponse.statusCode).toBe(200);
-    const updated = JSON.parse(updateResponse.body) as { name: string };
-    expect(updated.name).toBe('Updated App');
-
-    // Verify api_key was actually updated
-    const dbResult = await pool.query<{ api_key: string }>('SELECT api_key FROM yiai_apps WHERE slug = $1', ['new-app']);
-    expect(dbResult.rows[0].api_key).toBe('new-key');
-  });
-
-  it('does not update api_key when empty string is provided', async () => {
-    const app = await buildApp(pool);
-    await createTestUser(pool, 'admin_user', 'admin', 'testpass');
-    await createTestApp(pool, { slug: 'edit-app', name: 'Edit App', api_key: 'old-key' });
-
-    const token = await login(app, 'admin_user', 'testpass');
-
-    const listResponse = await app.inject({
-      method: 'GET',
-      url: '/api/admin/apps',
-      headers: { Authorization: `Bearer ${token}` },
-    });
-    const apps = JSON.parse(listResponse.body) as Array<{ id: string }>;
-
-    const updateResponse = await app.inject({
-      method: 'PATCH',
-      url: `/api/admin/apps/${apps[0].id}`,
-      headers: { Authorization: `Bearer ${token}` },
-      payload: { name: 'Renamed App', api_key: '' },
-    });
-
-    expect(updateResponse.statusCode).toBe(200);
-
-    const dbResult = await pool.query<{ api_key: string }>('SELECT api_key FROM yiai_apps WHERE slug = $1', ['edit-app']);
-    expect(dbResult.rows[0].api_key).toBe('old-key');
+    expect(response.statusCode).toBe(409);
+    expect(response.body).toContain('bound-app');
+    expect(response.body).not.toContain('same-key');
+    expect(fetchMock).not.toHaveBeenCalled();
   });
 
   it('syncs existing app metadata without exposing api_key', async () => {
@@ -437,6 +446,7 @@ describe('Admin Routes', () => {
       { method: 'GET' as const, url: '/api/admin/apps' },
       { method: 'POST' as const, url: '/api/admin/apps', payload: { slug: 'x', api_base_url: 'https://x', api_key: 'k' } },
       { method: 'PATCH' as const, url: `/api/admin/apps/${appId}`, payload: { name: 'x' } },
+      { method: 'PUT' as const, url: `/api/admin/apps/${appId}/connection`, payload: { api_base_url: 'https://x' } },
       { method: 'POST' as const, url: `/api/admin/apps/${appId}/sync` },
     ];
 

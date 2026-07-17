@@ -131,6 +131,7 @@ interface AdminApp {
   enabled: boolean;
   sort_order: number;
   requires_new_conversation_inputs: boolean;
+  connection_duplicate_of_slug?: string | null;
 }
 
 type View =
@@ -1486,7 +1487,7 @@ function AdminUsersTab() {
   );
 }
 
-function AdminAppsTab() {
+export function LegacyAdminAppsTab() {
   const [apps, setApps] = useState<AdminApp[]>([]);
   const [editingApp, setEditingApp] = useState<AdminApp | null>(null);
   const [creating, setCreating] = useState(false);
@@ -1809,6 +1810,339 @@ function AdminAppsTab() {
                   取消
                 </button>
                 <button type="submit">保存</button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function AdminAppsTab() {
+  const [apps, setApps] = useState<AdminApp[]>([]);
+  const [creating, setCreating] = useState(false);
+  const [settingsApp, setSettingsApp] = useState<AdminApp | null>(null);
+  const [connectionApp, setConnectionApp] = useState<AdminApp | null>(null);
+  const [connectionApiKey, setConnectionApiKey] = useState('');
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState('');
+  const [message, setMessage] = useState('');
+  const [createForm, setCreateForm] = useState({
+    slug: '',
+    api_base_url: 'https://yiai.charprint.com/v1',
+    api_key: '',
+    enabled: true,
+    sort_order: 0,
+  });
+  const [createFormError, setCreateFormError] = useState('');
+
+  const loadApps = useCallback(async () => {
+    const list = await api<AdminApp[]>('/admin/apps');
+    setApps(list);
+  }, []);
+
+  useEffect(() => {
+    setLoading(true);
+    loadApps()
+      .catch((err: unknown) => {
+        setError(err instanceof Error ? err.message : '加载失败');
+      })
+      .finally(() => {
+        setLoading(false);
+      });
+  }, [loadApps]);
+
+  const validateCreateForm = (): string | null => {
+    if (!createForm.slug.trim()) return '应用标识不能为空';
+    if (!/^[a-zA-Z0-9_-]+$/.test(createForm.slug.trim())) {
+      return '应用标识只能包含字母、数字、下划线和连字符';
+    }
+    if (!createForm.api_base_url.trim()) return 'YIAI API Base URL 不能为空';
+    if (!createForm.api_key.trim()) return 'YIAI API Key 不能为空';
+    if (!Number.isInteger(createForm.sort_order) || createForm.sort_order < 0) {
+      return '排序必须为不小于 0 的整数';
+    }
+    return null;
+  };
+
+  const handleCreateSubmit = (event: React.SyntheticEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    setError('');
+    setMessage('');
+    const validationError = validateCreateForm();
+    if (validationError) {
+      setCreateFormError(validationError);
+      return;
+    }
+
+    void (async () => {
+      try {
+        await api('/admin/apps', {
+          method: 'POST',
+          body: JSON.stringify({
+            slug: createForm.slug.trim(),
+            api_base_url: createForm.api_base_url.trim(),
+            api_key: createForm.api_key,
+            enabled: createForm.enabled,
+            sort_order: createForm.sort_order,
+          }),
+        });
+        setCreating(false);
+        setCreateFormError('');
+        setCreateForm({
+          slug: '',
+          api_base_url: 'https://yiai.charprint.com/v1',
+          api_key: '',
+          enabled: true,
+          sort_order: 0,
+        });
+        setMessage('应用已创建，并已从 YIAI 同步信息');
+        await loadApps();
+      } catch (err: unknown) {
+        setCreateFormError(err instanceof Error ? err.message : '应用创建失败');
+      }
+    })();
+  };
+
+  const handleSync = (app: AdminApp) => {
+    setError('');
+    setMessage('');
+    void (async () => {
+      try {
+        await api(`/admin/apps/${app.id}/sync`, { method: 'POST', body: JSON.stringify({}) });
+        setMessage(`已同步「${app.slug}」的 YIAI 信息`);
+        await loadApps();
+      } catch (err: unknown) {
+        setError(err instanceof Error ? err.message : '同步失败');
+      }
+    })();
+  };
+
+  const handleSettingsSubmit = (event: React.SyntheticEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    if (!settingsApp) return;
+    const form = event.currentTarget;
+    const enabled = (form.elements.namedItem('enabled') as HTMLInputElement).checked;
+    const sortOrder = Number((form.elements.namedItem('sort_order') as HTMLInputElement).value);
+    setError('');
+    setMessage('');
+
+    void (async () => {
+      try {
+        await api(`/admin/apps/${settingsApp.id}`, {
+          method: 'PATCH',
+          body: JSON.stringify({ enabled, sort_order: sortOrder }),
+        });
+        setSettingsApp(null);
+        setMessage(`已更新「${settingsApp.slug}」的平台设置`);
+        await loadApps();
+      } catch (err: unknown) {
+        setError(err instanceof Error ? err.message : '保存设置失败');
+      }
+    })();
+  };
+
+  const handleConnectionSubmit = (event: React.SyntheticEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    if (!connectionApp) return;
+    const form = event.currentTarget;
+    const apiBaseUrl = (form.elements.namedItem('api_base_url') as HTMLInputElement).value.trim();
+    setError('');
+    setMessage('');
+
+    void (async () => {
+      try {
+        await api(`/admin/apps/${connectionApp.id}/connection`, {
+          method: 'PUT',
+          body: JSON.stringify({ api_base_url: apiBaseUrl, api_key: connectionApiKey }),
+        });
+        setConnectionApp(null);
+        setConnectionApiKey('');
+        setMessage(`已验证并更新「${connectionApp.slug}」的 YIAI 连接`);
+        await loadApps();
+      } catch (err: unknown) {
+        setError(err instanceof Error ? err.message : '保存连接失败');
+      }
+    })();
+  };
+
+  return (
+    <div className="admin-tab">
+      {error && <p className="error-banner">{error}</p>}
+      {message && <p className="success-banner">{message}</p>}
+      <div className="admin-actions">
+        <div>
+          <h2>Chatflow 应用</h2>
+          <p className="input-hint">名称、说明、图标和新对话采集规则均以 YIAI 同步结果为准，不能手工修改。</p>
+        </div>
+        <button onClick={() => { setCreating(true); }}>新增 Chatflow 应用</button>
+      </div>
+
+      {loading && <p>加载中...</p>}
+      {!loading && (
+        <table className="admin-table">
+          <thead>
+            <tr>
+              <th>排序</th>
+              <th>应用</th>
+              <th>连接</th>
+              <th>启用</th>
+              <th>新对话采集</th>
+              <th>操作</th>
+            </tr>
+          </thead>
+          <tbody>
+            {apps.map((app) => (
+              <tr key={app.id}>
+                <td>{app.sort_order}</td>
+                <td>
+                  <div className="admin-app-summary">
+                    <span className="admin-app-icon"><AppIcon app={app} /></span>
+                    <span>
+                      <strong>{app.name || app.slug}</strong>
+                      <code>{app.slug}</code>
+                      {app.description && <small>{app.description}</small>}
+                    </span>
+                  </div>
+                </td>
+                <td>
+                  {app.connection_duplicate_of_slug ? (
+                    <span className="error">与「{app.connection_duplicate_of_slug}」连接重复</span>
+                  ) : app.api_key_configured ? (
+                    '已配置'
+                  ) : (
+                    '未配置'
+                  )}
+                </td>
+                <td>{app.enabled ? '已启用' : '已停用'}</td>
+                <td>{app.requires_new_conversation_inputs ? '需要采集信息' : '无需采集'}</td>
+                <td className="admin-app-actions">
+                  <button className="secondary" onClick={() => { setSettingsApp(app); }}>平台设置</button>
+                  <button
+                    className="secondary"
+                    onClick={() => {
+                      setConnectionApiKey('');
+                      setConnectionApp(app);
+                    }}
+                  >
+                    连接配置
+                  </button>
+                  <button className="secondary" onClick={() => { handleSync(app); }}>同步 YIAI</button>
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      )}
+
+      {creating && (
+        <div className="modal-overlay" onClick={() => { setCreating(false); }}>
+          <div className="modal wide" onClick={(event) => { event.stopPropagation(); }}>
+            <h3>新增 Chatflow 应用</h3>
+            <p className="input-hint">保存前会验证 YIAI 连接并自动读取名称、说明、图标和采集规则。同一套连接不能重复添加。</p>
+            {createFormError && <p className="error">{createFormError}</p>}
+            <form onSubmit={handleCreateSubmit}>
+              <label>
+                平台应用标识 slug
+                <input
+                  type="text"
+                  value={createForm.slug}
+                  onChange={(event) => { setCreateForm((previous) => ({ ...previous, slug: event.target.value })); }}
+                  required
+                />
+              </label>
+              <label>
+                YIAI Chatflow API Base URL
+                <input
+                  type="url"
+                  value={createForm.api_base_url}
+                  onChange={(event) => { setCreateForm((previous) => ({ ...previous, api_base_url: event.target.value })); }}
+                  required
+                />
+              </label>
+              <label>
+                YIAI Chatflow API Key
+                <input
+                  type="password"
+                  value={createForm.api_key}
+                  onChange={(event) => { setCreateForm((previous) => ({ ...previous, api_key: event.target.value })); }}
+                  required
+                />
+              </label>
+              <label>
+                排序
+                <input
+                  type="number"
+                  min={0}
+                  step={1}
+                  value={createForm.sort_order}
+                  onChange={(event) => { setCreateForm((previous) => ({ ...previous, sort_order: Number(event.target.value) })); }}
+                  required
+                />
+              </label>
+              <label className="checkbox">
+                <input
+                  type="checkbox"
+                  checked={createForm.enabled}
+                  onChange={(event) => { setCreateForm((previous) => ({ ...previous, enabled: event.target.checked })); }}
+                />
+                创建后立即启用
+              </label>
+              <div className="modal-actions">
+                <button type="button" className="secondary" onClick={() => { setCreating(false); }}>取消</button>
+                <button type="submit">验证并创建</button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {settingsApp && (
+        <div className="modal-overlay" onClick={() => { setSettingsApp(null); }}>
+          <div className="modal" onClick={(event) => { event.stopPropagation(); }}>
+            <h3>平台设置：{settingsApp.name || settingsApp.slug}</h3>
+            <p className="input-hint">这里只管理平台排序和是否在首页启用。YIAI 元数据请使用“同步 YIAI”。</p>
+            <form onSubmit={handleSettingsSubmit}>
+              <label>
+                排序
+                <input name="sort_order" type="number" min={0} step={1} defaultValue={settingsApp.sort_order} required />
+              </label>
+              <label className="checkbox">
+                <input name="enabled" type="checkbox" defaultChecked={settingsApp.enabled} />
+                在首页启用此应用
+              </label>
+              <div className="modal-actions">
+                <button type="button" className="secondary" onClick={() => { setSettingsApp(null); }}>取消</button>
+                <button type="submit">保存应用设置</button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {connectionApp && (
+        <div className="modal-overlay" onClick={() => { setConnectionApp(null); }}>
+          <div className="modal wide" onClick={(event) => { event.stopPropagation(); }}>
+            <h3>连接配置：{connectionApp.slug}</h3>
+            <p className="input-hint">保存时会先向 YIAI 验证，再同步名称、说明、图标和新对话采集规则。API Key 留空会保留原值且永不回显。</p>
+            <form onSubmit={handleConnectionSubmit}>
+              <label>
+                YIAI Chatflow API Base URL
+                <input name="api_base_url" type="url" defaultValue={connectionApp.api_base_url} required />
+              </label>
+              <label>
+                新 API Key（留空保留原值）
+                <input
+                  type="password"
+                  value={connectionApiKey}
+                  onChange={(event) => { setConnectionApiKey(event.target.value); }}
+                  placeholder="留空则不修改"
+                />
+              </label>
+              <div className="modal-actions">
+                <button type="button" className="secondary" onClick={() => { setConnectionApp(null); }}>取消</button>
+                <button type="submit">保存并验证连接</button>
               </div>
             </form>
           </div>
