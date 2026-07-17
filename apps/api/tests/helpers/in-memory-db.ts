@@ -37,6 +37,7 @@ export async function createInMemoryPool(): Promise<Pool> {
     '004_add_yiai_app_icon_fields.sql',
     '005_add_yiai_app_icon_cache.sql',
     '006_allow_negative_gift_tokens.sql',
+    '007_add_yiai_app_tags_and_icon_source.sql',
   ];
 
   for (const file of files) {
@@ -73,6 +74,8 @@ export async function createTestApp(
     icon: string | null;
     icon_type: 'image' | 'emoji' | null;
     icon_background: string | null;
+    tags: string[];
+    icon_source: 'yiai' | 'platform';
     api_base_url: string;
     api_key: string;
     enabled: boolean;

@@ -87,6 +87,41 @@ describe('AppHub', () => {
     expect(screen.getByText('测试应用说明')).toBeInTheDocument();
   });
 
+  it('filters app cards by tags', async () => {
+    const originalMock = fetchMock.getMockImplementation();
+    fetchMock.mockImplementation((input, init) => {
+      const url = typeof input === 'string' ? input : input.url;
+      const method = init?.method ?? 'GET';
+      if (url.endsWith('/apps') && method === 'GET') {
+        return Promise.resolve(
+          new Response(JSON.stringify([
+            {
+              id: 'tag-app-1', slug: 'philosophy-app', name: 'Philosophy App', description: null,
+              icon: null, icon_type: null, icon_url: null, icon_background: null,
+              tags: ['哲学'], sort_order: 1, requires_new_conversation_inputs: false,
+            },
+            {
+              id: 'tag-app-2', slug: 'classics-app', name: 'Classics App', description: null,
+              icon: null, icon_type: null, icon_url: null, icon_background: null,
+              tags: ['国学'], sort_order: 2, requires_new_conversation_inputs: false,
+            },
+          ]))
+        );
+      }
+      return originalMock?.(input, init) ?? Promise.reject(new Error(`Unexpected fetch: ${method} ${url}`));
+    });
+
+    render(<App />);
+    await waitFor(() => {
+      expect(screen.getByText('Philosophy App')).toBeInTheDocument();
+      expect(screen.getByText('Classics App')).toBeInTheDocument();
+    });
+
+    fireEvent.click(screen.getByRole('button', { name: '哲学' }));
+    expect(screen.getByText('Philosophy App')).toBeInTheDocument();
+    expect(screen.queryByText('Classics App')).not.toBeInTheDocument();
+  });
+
   it('falls back to slug when app name is empty', async () => {
     const originalMock = fetchMock.getMockImplementation();
     fetchMock.mockImplementation((input, init) => {
@@ -501,7 +536,7 @@ describe('AdminAppsTab', () => {
     });
   });
 
-  it('keeps YIAI metadata read-only and only submits platform settings', async () => {
+  it('edits platform-managed metadata and tags through platform settings', async () => {
     render(<App />);
 
     await waitFor(() => {
@@ -519,8 +554,10 @@ describe('AdminAppsTab', () => {
     fireEvent.click(screen.getAllByRole('button', { name: '平台设置' })[0]);
 
     expect(screen.getByRole('heading', { name: '平台设置：Test App' })).toBeInTheDocument();
-    expect(screen.queryByLabelText('名称')).not.toBeInTheDocument();
-    expect(screen.queryByLabelText('图标')).not.toBeInTheDocument();
+    fireEvent.change(screen.getByLabelText('应用名称'), { target: { value: 'Renamed App' } });
+    fireEvent.change(screen.getByLabelText('应用说明'), { target: { value: 'Platform description' } });
+    fireEvent.change(screen.getByLabelText('图标（Emoji 或图片地址）'), { target: { value: '🧠' } });
+    fireEvent.change(screen.getByLabelText('标签（用逗号分隔）'), { target: { value: '哲学，国学' } });
     fireEvent.click(screen.getByRole('button', { name: '保存应用设置' }));
 
     await waitFor(() => {
@@ -531,7 +568,14 @@ describe('AdminAppsTab', () => {
       expect(patchCall).toBeDefined();
       const [, init] = patchCall as [string | Request, RequestInit];
       const body = JSON.parse(init.body as string) as Record<string, unknown>;
-      expect(body).toEqual({ enabled: true, sort_order: 1 });
+      expect(body).toEqual({
+        enabled: true,
+        sort_order: 1,
+        name: 'Renamed App',
+        description: 'Platform description',
+        icon: '🧠',
+        tags: ['哲学', '国学'],
+      });
     });
   });
 

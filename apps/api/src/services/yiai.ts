@@ -28,6 +28,7 @@ interface YiaiApiResponse<T> {
 interface YiaiInfoResponse {
   name?: string;
   description?: string;
+  tags?: unknown;
   icon?: string;
   icon_type?: 'image' | 'emoji';
   icon_url?: string;
@@ -69,6 +70,7 @@ interface IconFields {
 export interface AppMetadata extends IconFields {
   name: string | null;
   description: string | null;
+  tags: string[];
   user_input_form: UserInputFormField[] | null;
 }
 
@@ -196,6 +198,19 @@ function normalizeOptions(options: unknown): UserInputFormField['options'] {
   return normalized.length > 0 ? normalized : undefined;
 }
 
+function normalizeTags(raw: unknown): string[] {
+  if (!Array.isArray(raw)) {
+    return [];
+  }
+
+  const tags = raw
+    .filter((item): item is string => typeof item === 'string')
+    .map((item) => item.trim())
+    .filter((item) => item !== '')
+    .slice(0, 10);
+  return [...new Set(tags)];
+}
+
 function normalizeUserInputForm(raw: unknown): UserInputFormField[] | null {
   if (!Array.isArray(raw)) {
     return null;
@@ -283,6 +298,7 @@ async function fetchUpstreamAppMetadata(baseUrl: string, apiKey: string): Promis
   return {
     name,
     description,
+    tags: normalizeTags(info.tags),
     ...iconFields,
     user_input_form,
     requires_new_conversation_inputs: (user_input_form ?? []).length > 0,
@@ -321,7 +337,7 @@ export async function findAppBySlug(pool: Pool, slug: string): Promise<DbApp | u
 
 export async function listEnabledApps(pool: Pool): Promise<YiaiApp[]> {
   const result = await pool.query<DbApp>(
-    `SELECT id, slug, name, description, icon, icon_type, icon_background, sort_order,
+    `SELECT id, slug, name, description, icon, icon_type, icon_background, tags, sort_order,
             requires_new_conversation_inputs, created_at, updated_at,
             icon_cache_filename, icon_cached_at
      FROM yiai_apps
@@ -356,6 +372,7 @@ export async function fetchAppMetadata(
   return {
     name: metadata.name,
     description: metadata.description,
+    tags: metadata.tags,
     icon: metadata.icon,
     icon_type: metadata.icon_type,
     icon_url: metadata.icon_url,
@@ -384,6 +401,7 @@ export async function bootstrapApp(pool: Pool, slug: string): Promise<AppBootstr
       icon_type: iconType,
       icon_url: getLocalIconUrl(app),
       icon_background: app.icon_background,
+      tags: app.tags ?? [],
       sort_order: app.sort_order,
       requires_new_conversation_inputs: app.requires_new_conversation_inputs,
       created_at: app.created_at,
@@ -619,6 +637,7 @@ export function toSafeApp(
     icon_type: iconType,
     icon_url: iconType === 'image' ? resolvedIconUrl : null,
     icon_background: app.icon_background,
+    tags: app.tags ?? [],
     sort_order: app.sort_order,
     requires_new_conversation_inputs: app.requires_new_conversation_inputs,
     created_at: app.created_at,

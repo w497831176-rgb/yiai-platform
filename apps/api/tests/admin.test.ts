@@ -178,7 +178,7 @@ describe('Admin Routes', () => {
     expect(dbResult.rows).toHaveLength(0);
   });
 
-  it('only allows platform settings to change through the settings endpoint', async () => {
+  it('updates platform-managed fields through the settings endpoint', async () => {
     const app = await buildApp(pool);
     await createTestUser(pool, 'admin_user', 'admin', 'testpass');
     const appId = await createTestApp(pool, {
@@ -194,16 +194,38 @@ describe('Admin Routes', () => {
       method: 'PATCH',
       url: `/api/admin/apps/${appId}`,
       headers: { Authorization: `Bearer ${token}` },
-      payload: { enabled: false, sort_order: 9 },
+      payload: {
+        enabled: false,
+        sort_order: 9,
+        name: 'Platform Name',
+        description: 'Platform description',
+        icon: '🧠',
+        tags: ['哲学', '国学'],
+      },
     });
 
     expect(updateResponse.statusCode).toBe(200);
-    const dbResult = await pool.query<{ name: string; api_key: string; enabled: boolean; sort_order: number }>(
-      'SELECT name, api_key, enabled, sort_order FROM yiai_apps WHERE id = $1',
+    const dbResult = await pool.query<{
+      name: string;
+      description: string;
+      icon: string;
+      icon_type: string;
+      tags: string[];
+      icon_source: string;
+      api_key: string;
+      enabled: boolean;
+      sort_order: number;
+    }>(
+      'SELECT name, description, icon, icon_type, tags, icon_source, api_key, enabled, sort_order FROM yiai_apps WHERE id = $1',
       [appId]
     );
     expect(dbResult.rows[0]).toMatchObject({
-      name: 'Upstream Name',
+      name: 'Platform Name',
+      description: 'Platform description',
+      icon: '🧠',
+      icon_type: 'emoji',
+      tags: ['哲学', '国学'],
+      icon_source: 'platform',
       api_key: 'initial-key',
       enabled: false,
       sort_order: 9,
@@ -266,7 +288,7 @@ describe('Admin Routes', () => {
     const appId = await createTestApp(pool, { slug: 'sync-app', name: 'Old Name', api_key: 'secret-key' });
 
     fetchMock
-      .mockResolvedValueOnce(new Response(JSON.stringify({ name: 'Synced Name' })))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ name: 'Synced Name', tags: ['医学', '养生'] })))
       .mockResolvedValueOnce(new Response(JSON.stringify({ site_info: { title: 'Synced Site', description: 'Synced desc', icon: '🔄' } })))
       .mockResolvedValueOnce(new Response(JSON.stringify({ user_input_form: [] })))
       .mockResolvedValueOnce(new Response(JSON.stringify({ site_info: { title: 'Synced Site', description: 'Synced desc', icon: '🔄' } })));
@@ -286,6 +308,7 @@ describe('Admin Routes', () => {
     expect(synced.name).toBe('Synced Site');
     expect(synced.description).toBe('Synced desc');
     expect(synced.icon).toBe('🔄');
+    expect(synced.tags).toEqual(['医学', '养生']);
   });
 
   it('sync updates requires_new_conversation_inputs from false to true', async () => {

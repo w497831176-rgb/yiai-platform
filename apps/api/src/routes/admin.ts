@@ -3,7 +3,7 @@ import type { Pool } from 'pg';
 import { authenticate } from '../auth/decorator.js';
 import { ensureDailyGift, getAllUserAccounts, getLedgerEntries, rechargeTokens } from '../services/token-account.js';
 import { syncAppMetadata, toSafeApp, YiaiUpstreamError, type UpstreamAppMetadata } from '../services/yiai.js';
-import { getLocalIconUrl, refreshAppIconCache } from '../services/icon-cache.js';
+import { cacheImageIconUrl, getLocalIconUrl, refreshAppIconCache } from '../services/icon-cache.js';
 
 interface AdminParams {
   userId: string;
@@ -26,6 +26,10 @@ interface CreateAppBody {
 interface UpdateAppSettingsBody {
   enabled?: boolean;
   sort_order?: number;
+  name?: string;
+  description?: string;
+  icon?: string;
+  tags?: string[];
 }
 
 interface UpdateAppConnectionBody {
@@ -41,6 +45,8 @@ interface AdminAppRow {
   icon: string | null;
   icon_type: 'image' | 'emoji' | null;
   icon_background: string | null;
+  tags: string[];
+  icon_source: 'yiai' | 'platform';
   api_base_url: string;
   api_key: string;
   enabled: boolean;
@@ -55,7 +61,7 @@ interface AdminAppRow {
 
 const ADMIN_APP_COLUMNS = `id, slug, name, description, icon, icon_type, icon_background,
   api_base_url, api_key, enabled, sort_order, requires_new_conversation_inputs,
-  created_at, updated_at, icon_cache_filename, icon_cache_content_type, icon_cached_at`;
+  created_at, updated_at, icon_cache_filename, icon_cache_content_type, icon_cached_at, tags, icon_source`;
 
 function assertAdmin(request: FastifyRequest, reply: FastifyReply): boolean {
   const user = request.user;
@@ -93,6 +99,51 @@ function normalizeBaseUrl(value: unknown): string | null {
     return null;
   }
   return normalized;
+}
+
+function normalizeTags(value: unknown): string[] | null {
+  if (!Array.isArray(value)) {
+    return null;
+  }
+
+  const tags = value
+    .filter((item): item is string => typeof item === 'string')
+    .map((item) => item.trim())
+    .filter((item) => item !== '');
+  const unique = [...new Set(tags)];
+  if (unique.length > 10 || unique.some((tag) => tag.length > 20)) {
+    return null;
+  }
+  return unique;
+}
+
+function parsePlatformIcon(value: unknown):
+  | { icon: string; iconType: 'emoji' | 'image'; imageUrl?: string }
+  | undefined
+  | null {
+  if (value === undefined) {
+    return undefined;
+  }
+  if (!isNonEmptyString(value)) {
+    return null;
+  }
+
+  const icon = value.trim();
+  if (/^https?:\/\//.test(icon)) {
+    try {
+      const parsed = new URL(icon);
+      if (parsed.protocol === 'http:' || parsed.protocol === 'https:') {
+        return { icon, iconType: 'image', imageUrl: icon };
+      }
+    } catch {
+      return null;
+    }
+  }
+
+  if (/^\p{Extended_Pictographic}+$/u.test(icon)) {
+    return { icon, iconType: 'emoji' };
+  }
+  return null;
 }
 
 function extractStoredIconFields(metadata: UpstreamAppMetadata) {
@@ -171,8 +222,10 @@ async function updateMetadata(
          icon_type = $5,
          icon_background = $6,
          requires_new_conversation_inputs = $7,
-         api_base_url = COALESCE($8, api_base_url),
-         api_key = COALESCE($9, api_key),
+         tags = $8,
+         icon_source = 'yiai',
+         api_base_url = COALESCE($9, api_base_url),
+         api_key = COALESCE($10, api_key),
          updated_at = NOW()
      WHERE id = $1
      RETURNING ${ADMIN_APP_COLUMNS}`,
@@ -184,6 +237,7 @@ async function updateMetadata(
       iconFields.icon_type,
       iconFields.icon_background,
       metadata.requires_new_conversation_inputs,
+      metadata.tags,
       connection?.apiBaseUrl ?? null,
       connection?.apiKey ?? null,
     ]
@@ -286,8 +340,8 @@ export function adminRoutes(fastify: FastifyInstance, options: { pool: Pool }) {
     try {
       const result = await pool.query<AdminAppRow>(
         `INSERT INTO yiai_apps
-          (slug, name, description, icon, icon_type, icon_background, api_base_url, api_key, enabled, sort_order, requires_new_conversation_inputs)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+          (slug, name, description, icon, icon_type, icon_background, tags, icon_source, api_base_url, api_key, enabled, sort_order, requires_new_conversation_inputs)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, 'yiai', $8, $9, $10, $11, $12)
          RETURNING ${ADMIN_APP_COLUMNS}`,
         [
           slug,
@@ -296,6 +350,7 @@ export function adminRoutes(fastify: FastifyInstance, options: { pool: Pool }) {
           iconFields.icon,
           iconFields.icon_type,
           iconFields.icon_background,
+          metadata.tags,
           apiBaseUrl,
           body.api_key,
           body.enabled ?? true,
@@ -363,8 +418,15 @@ export function adminRoutes(fastify: FastifyInstance, options: { pool: Pool }) {
       return reply.status(404).send({ error: '应用不存在' });
     }
 
-    if (body.enabled === undefined && body.sort_order === undefined) {
-      return reply.status(400).send({ error: '只能修改启用状态或排序；名称、说明、图标和采集规则请同步 YIAI 信息' });
+    if (
+      body.enabled === undefined &&
+      body.sort_order === undefined &&
+      body.name === undefined &&
+      body.description === undefined &&
+      body.icon === undefined &&
+      body.tags === undefined
+    ) {
+      return reply.status(400).send({ error: '请至少修改一项平台设置' });
     }
     if (body.enabled !== undefined && typeof body.enabled !== 'boolean') {
       return reply.status(400).send({ error: '启用状态格式错误' });
@@ -373,14 +435,63 @@ export function adminRoutes(fastify: FastifyInstance, options: { pool: Pool }) {
       return reply.status(400).send({ error: '排序必须为不小于 0 的整数' });
     }
 
+    if (body.name !== undefined && !isNonEmptyString(body.name)) {
+      return reply.status(400).send({ error: '应用名称不能为空' });
+    }
+    if (body.description !== undefined && typeof body.description !== 'string') {
+      return reply.status(400).send({ error: '应用说明格式错误' });
+    }
+    const name = body.name === undefined ? undefined : body.name.trim();
+    if (name !== undefined && (name === '' || name.length > 255)) {
+      return reply.status(400).send({ error: '应用名称长度应为 1 至 255 个字符' });
+    }
+    const description = body.description === undefined ? undefined : body.description.trim();
+    if (description !== undefined && description.length > 2000) {
+      return reply.status(400).send({ error: '应用说明不能超过 2000 个字符' });
+    }
+    const tags = body.tags === undefined ? undefined : normalizeTags(body.tags);
+    if (body.tags !== undefined && tags === null) {
+      return reply.status(400).send({ error: '标签最多 10 个，单个标签最多 20 个字符' });
+    }
+    const iconUpdate = parsePlatformIcon(body.icon);
+    if (body.icon !== undefined && iconUpdate === null) {
+      return reply.status(400).send({ error: '图标仅支持 Emoji 或 http(s) 图片地址' });
+    }
+
+    if (iconUpdate?.imageUrl) {
+      const cached = await cacheImageIconUrl(pool, app, iconUpdate.imageUrl);
+      if (!cached.success) {
+        return reply.status(400).send({ error: '图片图标下载失败，未保存平台设置' });
+      }
+    }
+
+    const setClauses = ['updated_at = NOW()'];
+    const values: unknown[] = [app.id];
+    const addValue = (column: string, value: unknown) => {
+      values.push(value);
+      setClauses.push(`${column} = $${String(values.length)}`);
+    };
+
+    if (body.enabled !== undefined) addValue('enabled', body.enabled);
+    if (body.sort_order !== undefined) addValue('sort_order', body.sort_order);
+    if (name !== undefined) addValue('name', name);
+    if (description !== undefined) addValue('description', description);
+    if (tags !== undefined) addValue('tags', tags);
+    if (iconUpdate) {
+      addValue('icon', iconUpdate.icon);
+      addValue('icon_type', iconUpdate.iconType);
+      setClauses.push("icon_source = 'platform'");
+      if (iconUpdate.iconType === 'emoji') {
+        setClauses.push('icon_cache_filename = NULL', 'icon_cache_content_type = NULL', 'icon_cached_at = NULL');
+      }
+    }
+
     const result = await pool.query<AdminAppRow>(
       `UPDATE yiai_apps
-       SET enabled = COALESCE($2, enabled),
-           sort_order = COALESCE($3, sort_order),
-           updated_at = NOW()
+       SET ${setClauses.join(', ')}
        WHERE id = $1
        RETURNING ${ADMIN_APP_COLUMNS}`,
-      [app.id, body.enabled ?? null, body.sort_order ?? null]
+      values
     );
     return toAdminAppResponse(result.rows[0]);
   });

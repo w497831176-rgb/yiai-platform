@@ -28,6 +28,7 @@ interface YiaiApp {
   icon_type: 'emoji' | 'image' | null;
   icon_url: string | null;
   icon_background: string | null;
+  tags?: string[];
   sort_order: number;
   requires_new_conversation_inputs: boolean;
 }
@@ -126,6 +127,7 @@ interface AdminApp {
   icon_type: 'emoji' | 'image' | null;
   icon_url: string | null;
   icon_background: string | null;
+  tags?: string[];
   api_base_url: string;
   api_key_configured: boolean;
   enabled: boolean;
@@ -518,6 +520,9 @@ function AppHub({
   onAdmin: () => void;
 }) {
   const roleLabel = user.role === 'admin' ? '管理员' : '用户';
+  const [activeTag, setActiveTag] = useState<string>('');
+  const tags = [...new Set(apps.flatMap((app) => app.tags ?? []))];
+  const visibleApps = activeTag === '' ? apps : apps.filter((app) => (app.tags ?? []).includes(activeTag));
 
   return (
     <div className="hub-page">
@@ -546,17 +551,44 @@ function AppHub({
             每日赠送 +{account.daily_gift_amount.toLocaleString()} Tokens，赠送余额最多累积至 {account.gift_tokens_max.toLocaleString()} Tokens
           </p>
         )}
+        {tags.length > 0 && (
+          <div className="tag-filter" aria-label="应用标签筛选">
+            <button
+              type="button"
+              className={activeTag === '' ? 'tag-filter-button active' : 'tag-filter-button'}
+              onClick={() => { setActiveTag(''); }}
+            >
+              全部
+            </button>
+            {tags.map((tag) => (
+              <button
+                key={tag}
+                type="button"
+                className={activeTag === tag ? 'tag-filter-button active' : 'tag-filter-button'}
+                onClick={() => { setActiveTag(tag); }}
+              >
+                {tag}
+              </button>
+            ))}
+          </div>
+        )}
         <div className="app-grid">
-          {apps.map((app) => (
+          {visibleApps.map((app) => (
             <button key={app.id} className="app-card" onClick={() => { onSelectApp(app.slug); }}>
               <div className="app-icon">
                 <AppIcon app={app} />
               </div>
               <h3>{app.name || app.slug}</h3>
               {app.description && <p>{app.description}</p>}
+              {(app.tags ?? []).length > 0 && (
+                <span className="app-tags">
+                  {(app.tags ?? []).map((tag) => <span key={tag}>{tag}</span>)}
+                </span>
+              )}
             </button>
           ))}
         </div>
+        {visibleApps.length === 0 && <p className="empty-state">没有符合该标签的应用。</p>}
       </main>
     </div>
   );
@@ -1925,6 +1957,13 @@ function AdminAppsTab() {
     const form = event.currentTarget;
     const enabled = (form.elements.namedItem('enabled') as HTMLInputElement).checked;
     const sortOrder = Number((form.elements.namedItem('sort_order') as HTMLInputElement).value);
+    const name = (form.elements.namedItem('name') as HTMLInputElement).value.trim();
+    const description = (form.elements.namedItem('description') as HTMLTextAreaElement).value.trim();
+    const icon = (form.elements.namedItem('icon') as HTMLInputElement).value.trim();
+    const tags = (form.elements.namedItem('tags') as HTMLInputElement).value
+      .split(/[,，]/)
+      .map((tag) => tag.trim())
+      .filter((tag) => tag !== '');
     setError('');
     setMessage('');
 
@@ -1932,7 +1971,14 @@ function AdminAppsTab() {
       try {
         await api(`/admin/apps/${settingsApp.id}`, {
           method: 'PATCH',
-          body: JSON.stringify({ enabled, sort_order: sortOrder }),
+          body: JSON.stringify({
+            enabled,
+            sort_order: sortOrder,
+            name,
+            description,
+            tags,
+            ...(icon !== '' ? { icon } : {}),
+          }),
         });
         setSettingsApp(null);
         setMessage(`已更新「${settingsApp.slug}」的平台设置`);
@@ -1974,7 +2020,7 @@ function AdminAppsTab() {
       <div className="admin-actions">
         <div>
           <h2>Chatflow 应用</h2>
-          <p className="input-hint">名称、说明、图标和新对话采集规则均以 YIAI 同步结果为准，不能手工修改。</p>
+          <p className="input-hint">可在平台设置手工调整名称、说明、图标和标签；点击“同步 YIAI”会用 YIAI 最新信息覆盖这些属性。</p>
         </div>
         <button onClick={() => { setCreating(true); }}>新增 Chatflow 应用</button>
       </div>
@@ -2003,6 +2049,9 @@ function AdminAppsTab() {
                       <strong>{app.name || app.slug}</strong>
                       <code>{app.slug}</code>
                       {app.description && <small>{app.description}</small>}
+                      {(app.tags ?? []).length > 0 && (
+                        <span className="admin-app-tags">{(app.tags ?? []).join(' · ')}</span>
+                      )}
                     </span>
                   </div>
                 </td>
@@ -2102,8 +2151,24 @@ function AdminAppsTab() {
         <div className="modal-overlay" onClick={() => { setSettingsApp(null); }}>
           <div className="modal" onClick={(event) => { event.stopPropagation(); }}>
             <h3>平台设置：{settingsApp.name || settingsApp.slug}</h3>
-            <p className="input-hint">这里只管理平台排序和是否在首页启用。YIAI 元数据请使用“同步 YIAI”。</p>
+            <p className="input-hint">这里的名称、说明、图标和标签为平台自定义属性。点击“同步 YIAI”后会被 YIAI 最新信息覆盖。</p>
             <form onSubmit={handleSettingsSubmit}>
+              <label>
+                应用名称
+                <input name="name" type="text" defaultValue={settingsApp.name || settingsApp.slug} maxLength={255} required />
+              </label>
+              <label>
+                应用说明
+                <textarea name="description" defaultValue={settingsApp.description ?? ''} maxLength={2000} />
+              </label>
+              <label>
+                图标（Emoji 或图片地址）
+                <input name="icon" type="text" placeholder={settingsApp.icon_type === 'image' ? '当前为图片图标；留空保持不变' : '例如：🧠 或 https://...'} />
+              </label>
+              <label>
+                标签（用逗号分隔）
+                <input name="tags" type="text" defaultValue={(settingsApp.tags ?? []).join('，')} placeholder="例如：哲学，国学" />
+              </label>
               <label>
                 排序
                 <input name="sort_order" type="number" min={0} step={1} defaultValue={settingsApp.sort_order} required />

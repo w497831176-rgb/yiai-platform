@@ -53,6 +53,7 @@ export interface YiaiApp {
   icon_type: 'image' | 'emoji' | null;
   icon_url: string | null;
   icon_background: string | null;
+  tags?: string[];
   sort_order: number;
   requires_new_conversation_inputs: boolean;
   created_at: string;

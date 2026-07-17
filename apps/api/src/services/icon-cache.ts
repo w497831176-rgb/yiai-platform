@@ -263,76 +263,20 @@ async function downloadIcon(url: string): Promise<{ buffer: Buffer; contentType:
   return { buffer, contentType };
 }
 
-export async function refreshAppIconCache(pool: Pool, app: CacheableApp): Promise<{ success: boolean }> {
+export async function cacheImageIconUrl(
+  pool: Pool,
+  app: Pick<CacheableApp, 'id' | 'slug'>,
+  iconUrl: string
+): Promise<{ success: boolean }> {
   const slug = sanitizeSlug(app.slug);
   if (!slug) {
     return { success: false };
   }
 
-  const baseUrl = app.api_base_url.replace(/\/$/, '');
-  let siteInfo: YiaiSiteInfoResponse;
-  try {
-    const site = await yiaiGet<YiaiSiteResponse>(`${baseUrl}/site`, app.api_key);
-    siteInfo = pickSiteInfo(site);
-  } catch (err) {
-    console.error(`[icon-cache] 刷新应用 ${app.slug} /site 失败:`, err instanceof Error ? err.message : err);
-    return { success: false };
-  }
-
-  const name =
-    typeof siteInfo.title === 'string' && siteInfo.title.trim() !== '' ? siteInfo.title.trim() : null;
-  const description =
-    typeof siteInfo.description === 'string' && siteInfo.description.trim() !== ''
-      ? siteInfo.description.trim()
-      : null;
-
-  const iconFields = extractIconFields(siteInfo);
-
-  // 始终先更新元数据；后续下载失败时保留已有缓存文件和缓存字段
-  try {
-    await pool.query(
-      `UPDATE yiai_apps
-       SET name = COALESCE($2, name),
-           description = COALESCE($3, description),
-           icon = $4,
-           icon_type = $5,
-           icon_background = $6
-       WHERE id = $1`,
-      [app.id, name, description, iconFields.icon, iconFields.icon_type, iconFields.icon_background]
-    );
-  } catch (err) {
-    console.error(
-      `[icon-cache] 更新应用 ${app.slug} 元数据失败:`,
-      err instanceof Error ? err.message : err
-    );
-    return { success: false };
-  }
-
-  if (iconFields.icon_type !== 'image' || !iconFields.icon_url) {
-    // 非图片图标：清理图片缓存字段，但保留缓存文件（如果存在）不做主动删除
-    try {
-      await pool.query(
-        `UPDATE yiai_apps
-         SET icon_cache_filename = NULL,
-             icon_cache_content_type = NULL,
-             icon_cached_at = NULL
-         WHERE id = $1`,
-        [app.id]
-      );
-    } catch (err) {
-      console.error(
-        `[icon-cache] 清除应用 ${app.slug} 图片缓存字段失败:`,
-        err instanceof Error ? err.message : err
-      );
-      return { success: false };
-    }
-    return { success: true };
-  }
-
   let buffer: Buffer;
   let contentType: string;
   try {
-    const downloaded = await downloadIcon(iconFields.icon_url);
+    const downloaded = await downloadIcon(iconUrl);
     buffer = downloaded.buffer;
     contentType = downloaded.contentType;
   } catch (err) {
@@ -340,7 +284,6 @@ export async function refreshAppIconCache(pool: Pool, app: CacheableApp): Promis
       `[icon-cache] 下载应用 ${app.slug} 图标失败:`,
       err instanceof Error ? err.message : err
     );
-    // 保留已有缓存文件和数据库缓存字段
     return { success: false };
   }
 
@@ -376,6 +319,81 @@ export async function refreshAppIconCache(pool: Pool, app: CacheableApp): Promis
   }
 
   return { success: true };
+}
+
+export async function refreshAppIconCache(
+  pool: Pool,
+  app: CacheableApp,
+  options: { syncMetadata?: boolean } = { syncMetadata: true }
+): Promise<{ success: boolean }> {
+  const slug = sanitizeSlug(app.slug);
+  if (!slug) {
+    return { success: false };
+  }
+
+  const baseUrl = app.api_base_url.replace(/\/$/, '');
+  let siteInfo: YiaiSiteInfoResponse;
+  try {
+    const site = await yiaiGet<YiaiSiteResponse>(`${baseUrl}/site`, app.api_key);
+    siteInfo = pickSiteInfo(site);
+  } catch (err) {
+    console.error(`[icon-cache] 刷新应用 ${app.slug} /site 失败:`, err instanceof Error ? err.message : err);
+    return { success: false };
+  }
+
+  const name =
+    typeof siteInfo.title === 'string' && siteInfo.title.trim() !== '' ? siteInfo.title.trim() : null;
+  const description =
+    typeof siteInfo.description === 'string' && siteInfo.description.trim() !== ''
+      ? siteInfo.description.trim()
+      : null;
+
+  const iconFields = extractIconFields(siteInfo);
+
+  if (options.syncMetadata === true) {
+    try {
+      await pool.query(
+        `UPDATE yiai_apps
+         SET name = COALESCE($2, name),
+             description = COALESCE($3, description),
+             icon = $4,
+             icon_type = $5,
+             icon_background = $6,
+             icon_source = 'yiai'
+         WHERE id = $1`,
+        [app.id, name, description, iconFields.icon, iconFields.icon_type, iconFields.icon_background]
+      );
+    } catch (err) {
+      console.error(
+        `[icon-cache] 更新应用 ${app.slug} 元数据失败:`,
+        err instanceof Error ? err.message : err
+      );
+      return { success: false };
+    }
+  }
+
+  if (iconFields.icon_type !== 'image' || !iconFields.icon_url) {
+    // 非图片图标：清理图片缓存字段，但保留缓存文件（如果存在）不做主动删除
+    try {
+      await pool.query(
+        `UPDATE yiai_apps
+         SET icon_cache_filename = NULL,
+             icon_cache_content_type = NULL,
+             icon_cached_at = NULL
+         WHERE id = $1`,
+        [app.id]
+      );
+    } catch (err) {
+      console.error(
+        `[icon-cache] 清除应用 ${app.slug} 图片缓存字段失败:`,
+        err instanceof Error ? err.message : err
+      );
+      return { success: false };
+    }
+    return { success: true };
+  }
+
+  return cacheImageIconUrl(pool, app, iconFields.icon_url);
 }
 
 export function getLocalIconUrl(app: IconCacheFields | null | undefined): string | null {
@@ -426,7 +444,9 @@ export async function serveIconFile(slug: string, pool: Pool, reply: FastifyRepl
 
 export async function refreshAllEnabledAppIcons(pool: Pool): Promise<void> {
   const appsResult = await pool.query<CacheableApp>(
-    'SELECT id, slug, api_base_url, api_key FROM yiai_apps WHERE enabled = true'
+    `SELECT id, slug, api_base_url, api_key
+     FROM yiai_apps
+     WHERE enabled = true AND icon_source = 'yiai'`
   );
 
   let success = 0;
@@ -434,7 +454,7 @@ export async function refreshAllEnabledAppIcons(pool: Pool): Promise<void> {
 
   for (const app of appsResult.rows) {
     try {
-      const refreshResult = await refreshAppIconCache(pool, app);
+      const refreshResult = await refreshAppIconCache(pool, app, { syncMetadata: false });
       if (refreshResult.success) {
         success += 1;
       } else {
