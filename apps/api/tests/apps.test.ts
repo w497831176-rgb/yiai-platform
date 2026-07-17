@@ -63,6 +63,7 @@ describe('App Routes', () => {
       name: '周易占卦',
       description: '数据库描述',
       icon: '🔮',
+      tags: ['国学'],
       sort_order: 1,
       requires_new_conversation_inputs: false,
     });
@@ -143,6 +144,7 @@ describe('App Routes', () => {
     expect(zhouyi?.icon).toBe('🔮');
     expect(zhouyi?.icon_type).toBe('emoji');
     expect(zhouyi?.icon_url).toBeNull();
+    expect(zhouyi?.tags).toEqual(['国学']);
 
     const dunjiazi = body.find((a) => a.slug === 'dunjiazi');
     expect(dunjiazi?.name).toBe('遁甲子');

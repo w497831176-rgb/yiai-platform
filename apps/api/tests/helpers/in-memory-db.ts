@@ -93,8 +93,8 @@ export async function createTestApp(
   const icon_cache_content_type = overrides.icon_cache_content_type ?? null;
   const icon_cached_at = overrides.icon_cached_at ?? null;
   const result = await pool.query<{ id: string }>(
-    `INSERT INTO yiai_apps (slug, name, description, icon, icon_type, icon_background, api_base_url, api_key, enabled, sort_order, requires_new_conversation_inputs, icon_cache_filename, icon_cache_content_type, icon_cached_at)
-     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
+    `INSERT INTO yiai_apps (slug, name, description, icon, icon_type, icon_background, tags, icon_source, api_base_url, api_key, enabled, sort_order, requires_new_conversation_inputs, icon_cache_filename, icon_cache_content_type, icon_cached_at)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)
      RETURNING id`,
     [
       slug,
@@ -103,6 +103,8 @@ export async function createTestApp(
       icon,
       icon_type,
       overrides.icon_background ?? null,
+      overrides.tags ?? [],
+      overrides.icon_source ?? 'yiai',
       overrides.api_base_url ?? 'https://yiai.example.com/v1',
       overrides.api_key ?? 'test-key',
       overrides.enabled ?? true,
