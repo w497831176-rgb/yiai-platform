@@ -130,6 +130,7 @@ interface AdminApp {
   tags?: string[];
   api_base_url: string;
   api_key_configured: boolean;
+  api_key_preview?: string | null;
   enabled: boolean;
   sort_order: number;
   requires_new_conversation_inputs: boolean;
@@ -1865,7 +1866,6 @@ function AdminAppsTab() {
     api_base_url: 'https://yiai.charprint.com/v1',
     api_key: '',
     enabled: true,
-    sort_order: 0,
   });
   const [createFormError, setCreateFormError] = useState('');
 
@@ -1892,9 +1892,6 @@ function AdminAppsTab() {
     }
     if (!createForm.api_base_url.trim()) return 'YIAI API Base URL 不能为空';
     if (!createForm.api_key.trim()) return 'YIAI API Key 不能为空';
-    if (!Number.isInteger(createForm.sort_order) || createForm.sort_order < 0) {
-      return '排序必须为不小于 0 的整数';
-    }
     return null;
   };
 
@@ -1917,7 +1914,6 @@ function AdminAppsTab() {
             api_base_url: createForm.api_base_url.trim(),
             api_key: createForm.api_key,
             enabled: createForm.enabled,
-            sort_order: createForm.sort_order,
           }),
         });
         setCreating(false);
@@ -1927,7 +1923,6 @@ function AdminAppsTab() {
           api_base_url: 'https://yiai.charprint.com/v1',
           api_key: '',
           enabled: true,
-          sort_order: 0,
         });
         setMessage('应用已创建，并已从 YIAI 同步信息');
         await loadApps();
@@ -1956,7 +1951,6 @@ function AdminAppsTab() {
     if (!settingsApp) return;
     const form = event.currentTarget;
     const enabled = (form.elements.namedItem('enabled') as HTMLInputElement).checked;
-    const sortOrder = Number((form.elements.namedItem('sort_order') as HTMLInputElement).value);
     const name = (form.elements.namedItem('name') as HTMLInputElement).value.trim();
     const description = (form.elements.namedItem('description') as HTMLTextAreaElement).value.trim();
     const icon = (form.elements.namedItem('icon') as HTMLInputElement).value.trim();
@@ -1973,7 +1967,6 @@ function AdminAppsTab() {
           method: 'PATCH',
           body: JSON.stringify({
             enabled,
-            sort_order: sortOrder,
             name,
             description,
             tags,
@@ -2013,6 +2006,22 @@ function AdminAppsTab() {
     })();
   };
 
+  const handleDelete = (app: AdminApp) => {
+    const appName = app.name || app.slug;
+    if (!window.confirm(`确定删除「${appName}」吗？这会删除该应用及其使用记录，且无法恢复。`)) return;
+    setError('');
+    setMessage('');
+    void (async () => {
+      try {
+        await api(`/admin/apps/${app.id}`, { method: 'DELETE' });
+        setMessage(`已删除应用「${appName}」`);
+        await loadApps();
+      } catch (err: unknown) {
+        setError(err instanceof Error ? err.message : '删除应用失败');
+      }
+    })();
+  };
+
   return (
     <div className="admin-tab">
       {error && <p className="error-banner">{error}</p>}
@@ -2030,7 +2039,6 @@ function AdminAppsTab() {
         <table className="admin-table">
           <thead>
             <tr>
-              <th>排序</th>
               <th>应用</th>
               <th>连接</th>
               <th>启用</th>
@@ -2041,7 +2049,6 @@ function AdminAppsTab() {
           <tbody>
             {apps.map((app) => (
               <tr key={app.id}>
-                <td>{app.sort_order}</td>
                 <td>
                   <div className="admin-app-summary">
                     <span className="admin-app-icon"><AppIcon app={app} /></span>
@@ -2055,14 +2062,15 @@ function AdminAppsTab() {
                     </span>
                   </div>
                 </td>
-                <td>
+                <td className="admin-connection-status">
                   {app.connection_duplicate_of_slug ? (
                     <span className="error">与「{app.connection_duplicate_of_slug}」连接重复</span>
                   ) : app.api_key_configured ? (
-                    '已配置'
+                    <span>已配置</span>
                   ) : (
-                    '未配置'
+                    <span>未配置</span>
                   )}
+                  {app.api_key_preview && <code>{app.api_key_preview}</code>}
                 </td>
                 <td>{app.enabled ? '已启用' : '已停用'}</td>
                 <td>{app.requires_new_conversation_inputs ? '需要采集信息' : '无需采集'}</td>
@@ -2078,6 +2086,7 @@ function AdminAppsTab() {
                     连接配置
                   </button>
                   <button className="secondary" onClick={() => { handleSync(app); }}>同步 YIAI</button>
+                  <button className="danger" onClick={() => { handleDelete(app); }}>删除</button>
                 </td>
               </tr>
             ))}
@@ -2119,17 +2128,6 @@ function AdminAppsTab() {
                   required
                 />
               </label>
-              <label>
-                排序
-                <input
-                  type="number"
-                  min={0}
-                  step={1}
-                  value={createForm.sort_order}
-                  onChange={(event) => { setCreateForm((previous) => ({ ...previous, sort_order: Number(event.target.value) })); }}
-                  required
-                />
-              </label>
               <label className="checkbox">
                 <input
                   type="checkbox"
@@ -2168,10 +2166,6 @@ function AdminAppsTab() {
               <label>
                 标签（用逗号分隔）
                 <input name="tags" type="text" defaultValue={(settingsApp.tags ?? []).join('，')} placeholder="例如：哲学，国学" />
-              </label>
-              <label>
-                排序
-                <input name="sort_order" type="number" min={0} step={1} defaultValue={settingsApp.sort_order} required />
               </label>
               <label className="checkbox">
                 <input name="enabled" type="checkbox" defaultChecked={settingsApp.enabled} />

@@ -80,9 +80,30 @@ describe('Admin Routes', () => {
     expect(body).toHaveLength(1);
     expect(body[0]).not.toHaveProperty('api_key');
     expect(body[0].api_key_configured).toBe(true);
+    expect(body[0].api_key_preview).toBe('sec…ey');
     expect(body[0]).toHaveProperty('icon_type');
     expect(body[0]).toHaveProperty('icon_url');
     expect(body[0]).toHaveProperty('icon_background');
+  });
+
+  it('sorts admin apps by tag pinyin then app name, with untagged apps last', async () => {
+    const app = await buildApp(pool);
+    await createTestUser(pool, 'admin_user', 'admin', 'testpass');
+    await createTestApp(pool, { slug: 'no-tag', name: 'No Tag', tags: [] });
+    await createTestApp(pool, { slug: 'medical', name: '慢诊', tags: ['医学'] });
+    await createTestApp(pool, { slug: 'guoxue-yi', name: '易经', tags: ['国学'] });
+    await createTestApp(pool, { slug: 'guoxue-jia', name: '甲骨', tags: ['国学'] });
+
+    const token = await login(app, 'admin_user', 'testpass');
+    const response = await app.inject({
+      method: 'GET',
+      url: '/api/admin/apps',
+      headers: { Authorization: `Bearer ${token}` },
+    });
+
+    expect(response.statusCode).toBe(200);
+    const body = JSON.parse(response.body) as Array<{ slug: string }>;
+    expect(body.map((item) => item.slug)).toEqual(['guoxue-jia', 'guoxue-yi', 'medical', 'no-tag']);
   });
 
   it('creates Chatflow app after fetching upstream metadata and hides api_key', async () => {
@@ -101,7 +122,6 @@ describe('Admin Routes', () => {
         slug: 'new-app',
         api_base_url: 'https://yiai.example.com/v1',
         api_key: 'initial-key',
-        sort_order: 1,
       },
     });
 
@@ -186,7 +206,6 @@ describe('Admin Routes', () => {
       name: 'Upstream Name',
       api_key: 'initial-key',
       enabled: true,
-      sort_order: 1,
     });
     const token = await login(app, 'admin_user', 'testpass');
 
@@ -196,7 +215,6 @@ describe('Admin Routes', () => {
       headers: { Authorization: `Bearer ${token}` },
       payload: {
         enabled: false,
-        sort_order: 9,
         name: 'Platform Name',
         description: 'Platform description',
         icon: '🧠',
@@ -214,9 +232,8 @@ describe('Admin Routes', () => {
       icon_source: string;
       api_key: string;
       enabled: boolean;
-      sort_order: number;
     }>(
-      'SELECT name, description, icon, icon_type, tags, icon_source, api_key, enabled, sort_order FROM yiai_apps WHERE id = $1',
+      'SELECT name, description, icon, icon_type, tags, icon_source, api_key, enabled FROM yiai_apps WHERE id = $1',
       [appId]
     );
     expect(dbResult.rows[0]).toMatchObject({
@@ -228,8 +245,25 @@ describe('Admin Routes', () => {
       icon_source: 'platform',
       api_key: 'initial-key',
       enabled: false,
-      sort_order: 9,
     });
+  });
+
+  it('deletes an app only for an admin', async () => {
+    const app = await buildApp(pool);
+    await createTestUser(pool, 'admin_user', 'admin', 'testpass');
+    const appId = await createTestApp(pool, { slug: 'delete-app', name: 'Delete App' });
+    const token = await login(app, 'admin_user', 'testpass');
+
+    const response = await app.inject({
+      method: 'DELETE',
+      url: `/api/admin/apps/${appId}`,
+      headers: { Authorization: `Bearer ${token}` },
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(JSON.parse(response.body)).toMatchObject({ id: appId, slug: 'delete-app', deleted: true });
+    const remaining = await pool.query('SELECT id FROM yiai_apps WHERE id = $1', [appId]);
+    expect(remaining.rows).toHaveLength(0);
   });
 
   it('updates a connection only after upstream verification and syncs its metadata', async () => {
@@ -469,6 +503,7 @@ describe('Admin Routes', () => {
       { method: 'GET' as const, url: '/api/admin/apps' },
       { method: 'POST' as const, url: '/api/admin/apps', payload: { slug: 'x', api_base_url: 'https://x', api_key: 'k' } },
       { method: 'PATCH' as const, url: `/api/admin/apps/${appId}`, payload: { name: 'x' } },
+      { method: 'DELETE' as const, url: `/api/admin/apps/${appId}` },
       { method: 'PUT' as const, url: `/api/admin/apps/${appId}/connection`, payload: { api_base_url: 'https://x' } },
       { method: 'POST' as const, url: `/api/admin/apps/${appId}/sync` },
     ];

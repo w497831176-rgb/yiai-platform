@@ -215,6 +215,7 @@ describe('AdminAppsTab', () => {
               icon_background: null,
               api_base_url: 'https://yiai.example.com/v1',
               api_key_configured: true,
+              api_key_preview: 'test-k…-key',
               enabled: true,
               sort_order: 1,
               requires_new_conversation_inputs: false,
@@ -230,6 +231,7 @@ describe('AdminAppsTab', () => {
               icon_background: null,
               api_base_url: 'https://yiai.example.com/v1',
               api_key_configured: true,
+              api_key_preview: 'input-…-key',
               enabled: true,
               sort_order: 2,
               requires_new_conversation_inputs: true,
@@ -296,6 +298,12 @@ describe('AdminAppsTab', () => {
       );
     }
 
+    if (url.endsWith('/admin/apps/app-1') && method === 'DELETE') {
+      return Promise.resolve(
+        new Response(JSON.stringify({ id: 'app-1', slug: 'test-app', deleted: true }))
+      );
+    }
+
     if (url.endsWith('/admin/apps/app-1/connection') && method === 'PUT') {
       return Promise.resolve(
         new Response(
@@ -340,6 +348,7 @@ describe('AdminAppsTab', () => {
     await waitFor(() => {
       expect(screen.getByRole('button', { name: '新增 Chatflow 应用' })).toBeInTheDocument();
     });
+    expect(screen.getByText('test-k…-key')).toBeInTheDocument();
 
     fireEvent.click(screen.getByRole('button', { name: '新增 Chatflow 应用' }));
 
@@ -354,8 +363,6 @@ describe('AdminAppsTab', () => {
     fireEvent.change(screen.getByLabelText('YIAI Chatflow API Key'), {
       target: { value: 'secret-api-key' },
     });
-    fireEvent.change(screen.getByLabelText('排序'), { target: { value: '5' } });
-
     fireEvent.click(screen.getByRole('button', { name: '验证并创建' }));
 
     await waitFor(() => {
@@ -371,7 +378,7 @@ describe('AdminAppsTab', () => {
       expect(body.slug).toBe('new-app');
       expect(body.api_base_url).toBe('https://yiai.example.com/v1');
       expect(body.api_key).toBe('secret-api-key');
-      expect(body.sort_order).toBe(5);
+      expect(body).not.toHaveProperty('sort_order');
       expect(body.enabled).toBe(true);
       expect(body).not.toHaveProperty('requires_new_conversation_inputs');
     });
@@ -379,6 +386,35 @@ describe('AdminAppsTab', () => {
     await waitFor(() => {
       expect(screen.getByText('应用已创建，并已从 YIAI 同步信息')).toBeInTheDocument();
     });
+  });
+
+  it('confirms before deleting an application from the admin list', async () => {
+    const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(true);
+    render(<App />);
+
+    await waitFor(() => {
+      expect(screen.getByText('应用中心')).toBeInTheDocument();
+    });
+    fireEvent.click(screen.getByRole('button', { name: '管理后台' }));
+    await waitFor(() => {
+      expect(screen.getByRole('button', { name: '应用管理' })).toBeInTheDocument();
+    });
+    fireEvent.click(screen.getByRole('button', { name: '应用管理' }));
+
+    await waitFor(() => {
+      expect(screen.getAllByRole('button', { name: '删除' })).toHaveLength(2);
+    });
+    fireEvent.click(screen.getAllByRole('button', { name: '删除' })[0]);
+
+    expect(confirmSpy).toHaveBeenCalledWith('确定删除「Test App」吗？这会删除该应用及其使用记录，且无法恢复。');
+    await waitFor(() => {
+      const deleteCall = fetchMock.mock.calls.find(([url, init]) => {
+        const callUrl = typeof url === 'string' ? url : url.url;
+        return callUrl.endsWith('/admin/apps/app-1') && init?.method === 'DELETE';
+      });
+      expect(deleteCall).toBeDefined();
+    });
+    confirmSpy.mockRestore();
   });
 
   it.skip('shows sync button for existing apps', async () => {
@@ -570,7 +606,6 @@ describe('AdminAppsTab', () => {
       const body = JSON.parse(init.body as string) as Record<string, unknown>;
       expect(body).toEqual({
         enabled: true,
-        sort_order: 1,
         name: 'Renamed App',
         description: 'Platform description',
         icon: '🧠',

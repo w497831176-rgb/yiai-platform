@@ -8,6 +8,7 @@ import type {
   ChatRequest,
   UploadedFile,
 } from '@yiai/shared';
+import { sortAppsByTagAndName } from './app-order.js';
 import { getLocalIconUrl } from './icon-cache.js';
 
 interface DbApp extends YiaiApp {
@@ -341,11 +342,10 @@ export async function listEnabledApps(pool: Pool): Promise<YiaiApp[]> {
             requires_new_conversation_inputs, created_at, updated_at,
             icon_cache_filename, icon_cached_at
      FROM yiai_apps
-     WHERE enabled = true
-     ORDER BY sort_order ASC, created_at ASC`
+     WHERE enabled = true`
   );
 
-  return result.rows.map((row) => toSafeApp(row));
+  return sortAppsByTagAndName(result.rows.map((row) => toSafeApp(row)));
 }
 
 export async function fetchAppMetadata(

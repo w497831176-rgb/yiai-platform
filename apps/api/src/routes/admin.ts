@@ -1,5 +1,6 @@
 import type { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify';
 import type { Pool } from 'pg';
+import { sortAppsByTagAndName } from '../services/app-order.js';
 import { authenticate } from '../auth/decorator.js';
 import { ensureDailyGift, getAllUserAccounts, getLedgerEntries, rechargeTokens } from '../services/token-account.js';
 import { syncAppMetadata, toSafeApp, YiaiUpstreamError, type UpstreamAppMetadata } from '../services/yiai.js';
@@ -20,12 +21,10 @@ interface CreateAppBody {
   api_base_url?: string;
   api_key?: string;
   enabled?: boolean;
-  sort_order?: number;
 }
 
 interface UpdateAppSettingsBody {
   enabled?: boolean;
-  sort_order?: number;
   name?: string;
   description?: string;
   icon?: string;
@@ -78,10 +77,6 @@ function assertAdmin(request: FastifyRequest, reply: FastifyReply): boolean {
 
 function isNonEmptyString(value: unknown): value is string {
   return typeof value === 'string' && value.trim() !== '';
-}
-
-function isNonNegativeInteger(value: unknown): value is number {
-  return typeof value === 'number' && Number.isInteger(value) && value >= 0;
 }
 
 function normalizeBaseUrl(value: unknown): string | null {
@@ -154,11 +149,18 @@ function extractStoredIconFields(metadata: UpstreamAppMetadata) {
   };
 }
 
+function maskApiKey(apiKey: string): string | null {
+  if (apiKey === '') return null;
+  if (apiKey.length <= 10) return `${apiKey.slice(0, 3)}…${apiKey.slice(-2)}`;
+  return `${apiKey.slice(0, 6)}…${apiKey.slice(-4)}`;
+}
+
 function toAdminAppResponse(row: AdminAppRow, duplicateOfSlug: string | null = null): Record<string, unknown> {
   return {
     ...toSafeApp(row, getLocalIconUrl(row)),
     api_base_url: row.api_base_url,
     api_key_configured: row.api_key !== '',
+    api_key_preview: maskApiKey(row.api_key),
     enabled: row.enabled,
     connection_duplicate_of_slug: duplicateOfSlug,
   };
@@ -305,8 +307,9 @@ export function adminRoutes(fastify: FastifyInstance, options: { pool: Pool }) {
 
   fastify.get('/admin/apps', { preHandler: authenticate }, async (request, reply) => {
     if (!assertAdmin(request, reply)) return;
-    const result = await pool.query<AdminAppRow>(`SELECT ${ADMIN_APP_COLUMNS} FROM yiai_apps ORDER BY sort_order, created_at`);
-    return result.rows.map((row) => toAdminAppResponse(row, getDuplicatePrimary(result.rows, row)?.slug ?? null));
+    const result = await pool.query<AdminAppRow>(`SELECT ${ADMIN_APP_COLUMNS} FROM yiai_apps`);
+    const sortedApps = sortAppsByTagAndName(result.rows);
+    return sortedApps.map((row) => toAdminAppResponse(row, getDuplicatePrimary(result.rows, row)?.slug ?? null));
   });
 
   fastify.post('/admin/apps', { preHandler: authenticate }, async (request, reply) => {
@@ -324,10 +327,6 @@ export function adminRoutes(fastify: FastifyInstance, options: { pool: Pool }) {
     if (!isNonEmptyString(body.api_key)) {
       return reply.status(400).send({ error: 'YIAI API Key 不能为空' });
     }
-    if (body.sort_order !== undefined && !isNonNegativeInteger(body.sort_order)) {
-      return reply.status(400).send({ error: '排序必须为不小于 0 的整数' });
-    }
-
     const duplicate = await findConnectionDuplicate(pool, apiBaseUrl, body.api_key);
     if (duplicate) {
       return reply.status(409).send({ error: `这套 YIAI 连接已经绑定到应用「${duplicate.slug}」，请编辑该应用，不要重复新增` });
@@ -354,7 +353,7 @@ export function adminRoutes(fastify: FastifyInstance, options: { pool: Pool }) {
           apiBaseUrl,
           body.api_key,
           body.enabled ?? true,
-          body.sort_order ?? 0,
+          0,
           metadata.requires_new_conversation_inputs,
         ]
       );
@@ -420,7 +419,6 @@ export function adminRoutes(fastify: FastifyInstance, options: { pool: Pool }) {
 
     if (
       body.enabled === undefined &&
-      body.sort_order === undefined &&
       body.name === undefined &&
       body.description === undefined &&
       body.icon === undefined &&
@@ -431,10 +429,6 @@ export function adminRoutes(fastify: FastifyInstance, options: { pool: Pool }) {
     if (body.enabled !== undefined && typeof body.enabled !== 'boolean') {
       return reply.status(400).send({ error: '启用状态格式错误' });
     }
-    if (body.sort_order !== undefined && !isNonNegativeInteger(body.sort_order)) {
-      return reply.status(400).send({ error: '排序必须为不小于 0 的整数' });
-    }
-
     if (body.name !== undefined && !isNonEmptyString(body.name)) {
       return reply.status(400).send({ error: '应用名称不能为空' });
     }
@@ -473,7 +467,6 @@ export function adminRoutes(fastify: FastifyInstance, options: { pool: Pool }) {
     };
 
     if (body.enabled !== undefined) addValue('enabled', body.enabled);
-    if (body.sort_order !== undefined) addValue('sort_order', body.sort_order);
     if (name !== undefined) addValue('name', name);
     if (description !== undefined) addValue('description', description);
     if (tags !== undefined) addValue('tags', tags);
@@ -494,5 +487,19 @@ export function adminRoutes(fastify: FastifyInstance, options: { pool: Pool }) {
       values
     );
     return toAdminAppResponse(result.rows[0]);
+  });
+
+  fastify.delete('/admin/apps/:id', { preHandler: authenticate }, async (request, reply) => {
+    if (!assertAdmin(request, reply)) return;
+    const params = request.params as AdminParams;
+    const result = await pool.query<{ id: string; slug: string }>(
+      'DELETE FROM yiai_apps WHERE id = $1 RETURNING id, slug',
+      [params.id]
+    );
+    const deleted = result.rows.at(0);
+    if (!deleted) {
+      return reply.status(404).send({ error: '应用不存在' });
+    }
+    return { ...deleted, deleted: true };
   });
 }
