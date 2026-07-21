@@ -1,0 +1,10 @@
+[Unit]
+Description=Run monthly YIAI Platform backup integrity check
+
+[Timer]
+OnCalendar=monthly
+Persistent=true
+Unit=yiai-platform-backup-check.service
+
+[Install]
+WantedBy=timers.target

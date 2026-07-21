@@ -1,0 +1,12 @@
+[Unit]
+Description=YIAI Platform encrypted NAS backup
+Requires=docker.service yiai-platform.service
+After=docker.service yiai-platform.service network-online.target
+Wants=network-online.target
+ConditionPathExists=/srv/yiai-platform/secrets/backup.env
+
+[Service]
+Type=oneshot
+WorkingDirectory=/srv/yiai-platform/current
+ExecStart=/srv/yiai-platform/current/ops/backup-to-nas.sh
+TimeoutStartSec=2h

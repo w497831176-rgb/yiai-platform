@@ -1,0 +1,10 @@
+[Unit]
+Description=Run YIAI Platform NAS backup every six hours
+
+[Timer]
+OnCalendar=*-*-* 00,06,12,18:15:00
+Persistent=true
+Unit=yiai-platform-backup.service
+
+[Install]
+WantedBy=timers.target

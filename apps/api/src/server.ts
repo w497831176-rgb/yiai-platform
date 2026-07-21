@@ -31,7 +31,7 @@ export async function buildApp(): Promise<FastifyInstance> {
 
 export async function startServer(): Promise<void> {
   const app = await buildApp();
-  const address = await app.listen({ port: env.PORT, host: '0.0.0.0' });
+  const address = await app.listen({ port: env.PORT, host: env.HOST });
   app.log.info(`Server listening at ${address}`);
   scheduleDailyIconRefresh(pool);
 }

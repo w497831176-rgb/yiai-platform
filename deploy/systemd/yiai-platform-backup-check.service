@@ -1,0 +1,11 @@
+[Unit]
+Description=YIAI Platform encrypted backup integrity check
+After=network-online.target
+Wants=network-online.target
+ConditionPathExists=/srv/yiai-platform/secrets/backup.env
+
+[Service]
+Type=oneshot
+WorkingDirectory=/srv/yiai-platform/current
+ExecStart=/srv/yiai-platform/current/ops/backup-check.sh
+TimeoutStartSec=2h

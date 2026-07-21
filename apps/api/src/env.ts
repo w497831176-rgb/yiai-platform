@@ -5,6 +5,7 @@ dotenv.config();
 export const env = {
   NODE_ENV: process.env.NODE_ENV ?? 'development',
   PORT: parseInt(process.env.YIAI_PLATFORM_API_PORT ?? '3000', 10),
+  HOST: process.env.YIAI_PLATFORM_API_HOST ?? '0.0.0.0',
   DB_HOST: process.env.YIAI_PLATFORM_DB_HOST ?? 'localhost',
   DB_PORT: parseInt(process.env.YIAI_PLATFORM_DB_PORT ?? '5432', 10),
   DB_USER: process.env.YIAI_PLATFORM_DB_USER ?? 'yiai',

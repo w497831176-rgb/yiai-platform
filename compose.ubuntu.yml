@@ -1,0 +1,104 @@
+name: yiai-platform
+
+services:
+  db:
+    image: postgres:16-alpine
+    container_name: yiai-platform-db
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${YIAI_PLATFORM_DB_USER:?YIAI_PLATFORM_DB_USER is required}
+      POSTGRES_PASSWORD: ${YIAI_PLATFORM_DB_PASSWORD:?YIAI_PLATFORM_DB_PASSWORD is required}
+      POSTGRES_DB: ${YIAI_PLATFORM_DB_NAME:?YIAI_PLATFORM_DB_NAME is required}
+    volumes:
+      - ${YIAI_PLATFORM_DATA_ROOT:-/srv/yiai-platform/data}/postgres:/var/lib/postgresql/data
+    ports:
+      - "127.0.0.1:5432:5432"
+    networks:
+      - yiai-platform-net
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${YIAI_PLATFORM_DB_USER} -d ${YIAI_PLATFORM_DB_NAME}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  migrate:
+    build:
+      context: .
+      dockerfile: Dockerfile.api
+      network: host
+    container_name: yiai-platform-migrate
+    restart: "no"
+    environment:
+      NODE_ENV: production
+      YIAI_PLATFORM_DB_HOST: db
+      YIAI_PLATFORM_DB_PORT: 5432
+      YIAI_PLATFORM_DB_USER: ${YIAI_PLATFORM_DB_USER:?YIAI_PLATFORM_DB_USER is required}
+      YIAI_PLATFORM_DB_PASSWORD: ${YIAI_PLATFORM_DB_PASSWORD:?YIAI_PLATFORM_DB_PASSWORD is required}
+      YIAI_PLATFORM_DB_NAME: ${YIAI_PLATFORM_DB_NAME:?YIAI_PLATFORM_DB_NAME is required}
+      YIAI_PLATFORM_JWT_SECRET: ${YIAI_PLATFORM_JWT_SECRET:?YIAI_PLATFORM_JWT_SECRET is required}
+    command: ["node", "db/migrations/migrate.js"]
+    depends_on:
+      db:
+        condition: service_healthy
+    networks:
+      - yiai-platform-net
+
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile.api
+      network: host
+    container_name: yiai-platform-api
+    restart: unless-stopped
+    environment:
+      NODE_ENV: production
+      YIAI_PLATFORM_API_PORT: 3000
+      # Host networking lets this service use the existing Mihomo/TUN egress
+      # without changing the machine's proxy, routing, or firewall rules.
+      YIAI_PLATFORM_API_HOST: 127.0.0.1
+      YIAI_PLATFORM_DB_HOST: 127.0.0.1
+      YIAI_PLATFORM_DB_PORT: 5432
+      YIAI_PLATFORM_DB_USER: ${YIAI_PLATFORM_DB_USER:?YIAI_PLATFORM_DB_USER is required}
+      YIAI_PLATFORM_DB_PASSWORD: ${YIAI_PLATFORM_DB_PASSWORD:?YIAI_PLATFORM_DB_PASSWORD is required}
+      YIAI_PLATFORM_DB_NAME: ${YIAI_PLATFORM_DB_NAME:?YIAI_PLATFORM_DB_NAME is required}
+      YIAI_PLATFORM_JWT_SECRET: ${YIAI_PLATFORM_JWT_SECRET:?YIAI_PLATFORM_JWT_SECRET is required}
+    volumes:
+      - ${YIAI_PLATFORM_DATA_ROOT:-/srv/yiai-platform/data}/icon-cache:/app/data/icon-cache
+    depends_on:
+      db:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+    network_mode: host
+    healthcheck:
+      test: ["CMD-SHELL", "node -e \"fetch('http://127.0.0.1:3000/api/health').then(r => process.exit(r.ok ? 0 : 1)).catch(() => process.exit(1))\""]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+
+  web:
+    build:
+      context: .
+      dockerfile: Dockerfile.web
+      network: host
+      args:
+        NGINX_CONFIG: infra/nginx/nginx.ubuntu.conf
+    container_name: yiai-platform-web
+    restart: unless-stopped
+    depends_on:
+      api:
+        condition: service_healthy
+    network_mode: host
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://127.0.0.1:18114/ || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+
+networks:
+  yiai-platform-net:
+    name: yiai-platform-net
+    ipam:
+      config:
+        - subnet: 172.30.0.0/24
+          gateway: 172.30.0.1
