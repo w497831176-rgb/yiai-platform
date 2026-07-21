@@ -6,7 +6,7 @@ DATA_ROOT="${YIAI_PLATFORM_DATA_ROOT:-/srv/yiai-platform/data}"
 SECRETS_DIR="${YIAI_PLATFORM_SECRETS_DIR:-/srv/yiai-platform/secrets}"
 STAGING_DIR="${YIAI_PLATFORM_BACKUP_STAGING:-/srv/yiai-platform/backup-staging}"
 BACKUP_ENV="$SECRETS_DIR/backup.env"
-LOCK_FILE="/run/lock/yiai-platform-backup.lock"
+LOCK_FILE="$STAGING_DIR/yiai-platform-backup.lock"
 
 log() { printf '[%s] %s\n' "$(date --iso-8601=seconds)" "$*"; }
 die() { log "ERROR: $*"; exit 1; }
