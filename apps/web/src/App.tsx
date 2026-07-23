@@ -2160,16 +2160,23 @@ function AdminAppsTab() {
             <p className="input-hint">Chatflow 会自动识别 YIAI 表单；Agent 的首次信息表单由平台保存，并不会被同步覆盖。</p>
             {createFormError && <p className="error">{createFormError}</p>}
             <form onSubmit={handleCreateSubmit}>
-              <label>
-                应用类型
-                <select
-                  value={createForm.app_type}
-                  onChange={(event: React.ChangeEvent<HTMLSelectElement>) => { setCreateForm((previous) => ({ ...previous, app_type: event.currentTarget.value as 'chatflow' | 'agent' })); }}
+              <div className="app-type-switch" role="group" aria-label="应用类型">
+                <span>应用类型</span>
+                <button
+                  type="button"
+                  className={createForm.app_type === 'chatflow' ? 'active' : 'secondary'}
+                  onClick={() => { setCreateForm((previous) => ({ ...previous, app_type: 'chatflow' })); }}
                 >
-                  <option value="chatflow">Chatflow</option>
-                  <option value="agent">Agent</option>
-                </select>
-              </label>
+                  Chatflow
+                </button>
+                <button
+                  type="button"
+                  className={createForm.app_type === 'agent' ? 'active' : 'secondary'}
+                  onClick={() => { setCreateForm((previous) => ({ ...previous, app_type: 'agent' })); }}
+                >
+                  Agent
+                </button>
+              </div>
               <label>
                 平台应用标识 slug
                 <input

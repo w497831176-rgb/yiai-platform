@@ -389,6 +389,27 @@ describe('AdminAppsTab', () => {
     });
   });
 
+  it('switches the create form to Agent without leaving the admin page', async () => {
+    render(<App />);
+
+    await waitFor(() => {
+      expect(screen.getByText('应用中心')).toBeInTheDocument();
+    });
+    fireEvent.click(screen.getByRole('button', { name: '管理后台' }));
+    await waitFor(() => {
+      expect(screen.getByRole('button', { name: '应用管理' })).toBeInTheDocument();
+    });
+    fireEvent.click(screen.getByRole('button', { name: '应用管理' }));
+    await waitFor(() => {
+      expect(screen.getByRole('button', { name: '新增应用' })).toBeInTheDocument();
+    });
+    fireEvent.click(screen.getByRole('button', { name: '新增应用' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Agent' }));
+
+    expect(screen.getByText('Agent 新对话信息表单（JSON 数组，可留空）')).toBeInTheDocument();
+    expect(screen.getByRole('heading', { name: '新增应用' })).toBeInTheDocument();
+  });
+
   it('confirms before deleting an application from the admin list', async () => {
     const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(true);
     render(<App />);
