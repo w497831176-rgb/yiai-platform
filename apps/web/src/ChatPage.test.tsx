@@ -123,4 +123,43 @@ describe('ChatPage latest conversation inputs restore', () => {
       expect(body.inputs).toEqual({ name: '张三', gender: '男' });
     });
   });
+
+  it('renders an assistant history reply as Markdown', async () => {
+    fetchMock.mockImplementation((input) => {
+      const url = typeof input === 'string' ? input : input.url;
+      if (url.endsWith('/bootstrap')) {
+        return Promise.resolve(
+          new Response(
+            JSON.stringify({
+              app: {
+                id: 'app-markdown', slug: 'markdown-app', name: 'Markdown App', description: null,
+                icon: null, sort_order: 1, requires_new_conversation_inputs: false, created_at: '', updated_at: '',
+              },
+              opening_statement: null, suggested_questions: [], user_input_form: null,
+            })
+          )
+        );
+      }
+      if (url.endsWith('/conversations')) return Promise.resolve(new Response(JSON.stringify([{ id: 'markdown-conv', name: 'Markdown', inputs: {}, status: 'normal', updated_at: 1, created_at: 1 }])));
+      if (url.includes('/conversations/') && url.endsWith('/messages')) {
+        return Promise.resolve(new Response(JSON.stringify([{ id: 'message-1', conversation_id: 'markdown-conv', query: 'q', answer: '## 命盘结果\n\n| 项目 | 内容 |\n| --- | --- |\n| 命宫 | 戌 |', created_at: 1 }])));
+      }
+      return Promise.reject(new Error(`Unexpected fetch: ${url}`));
+    });
+
+    render(
+      <ChatPage
+        slug="markdown-app"
+        user={{ id: 'user-1', username: 'tester', role: 'user' }}
+        account={{ gift_tokens: 100, recharge_tokens: 50, daily_gift_amount: 10, gift_tokens_max: 200, last_gift_date: null }}
+        onBack={() => {}}
+        onLogout={() => {}}
+      />
+    );
+
+    await waitFor(() => {
+      expect(screen.getByRole('heading', { name: '命盘结果' })).toBeInTheDocument();
+      expect(screen.getByRole('table')).toBeInTheDocument();
+    });
+  });
 });

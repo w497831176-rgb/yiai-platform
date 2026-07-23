@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import './App.css';
+import { MarkdownMessage } from './MarkdownMessage';
 import { readSSEStream } from './sse';
 import { startChatStream, type ChatRequestBody } from './chat';
 import {
@@ -1185,7 +1186,7 @@ export function ChatPage({
             <div key={idx} className={`message ${msg.role}`}>
               <div className="message-content">
                 <div className="bubble">
-                  {msg.content}
+                  {msg.role === 'assistant' ? <MarkdownMessage content={msg.content} /> : msg.content}
                   {msg.files && msg.files.length > 0 && (
                     <div className="message-files">
                       {msg.files.map((file, fidx) => (
