@@ -330,7 +330,7 @@ describe('AdminAppsTab', () => {
     localStorage.removeItem(TOKEN_KEY);
   });
 
-  it('has "新增 Chatflow 应用" button and submits correct body', async () => {
+  it('has "新增应用" button and submits a Chatflow body', async () => {
     render(<App />);
 
     await waitFor(() => {
@@ -346,21 +346,21 @@ describe('AdminAppsTab', () => {
     fireEvent.click(screen.getByRole('button', { name: '应用管理' }));
 
     await waitFor(() => {
-      expect(screen.getByRole('button', { name: '新增 Chatflow 应用' })).toBeInTheDocument();
+      expect(screen.getByRole('button', { name: '新增应用' })).toBeInTheDocument();
     });
     expect(screen.getByText('test-k…-key')).toBeInTheDocument();
 
-    fireEvent.click(screen.getByRole('button', { name: '新增 Chatflow 应用' }));
+    fireEvent.click(screen.getByRole('button', { name: '新增应用' }));
 
     await waitFor(() => {
-      expect(screen.getByRole('heading', { name: '新增 Chatflow 应用' })).toBeInTheDocument();
+      expect(screen.getByRole('heading', { name: '新增应用' })).toBeInTheDocument();
     });
 
     fireEvent.change(screen.getByLabelText('平台应用标识 slug'), { target: { value: 'new-app' } });
-    fireEvent.change(screen.getByLabelText('YIAI Chatflow API Base URL'), {
+    fireEvent.change(screen.getByLabelText('YIAI API Base URL'), {
       target: { value: 'https://yiai.example.com/v1' },
     });
-    fireEvent.change(screen.getByLabelText('YIAI Chatflow API Key'), {
+    fireEvent.change(screen.getByLabelText('YIAI API Key'), {
       target: { value: 'secret-api-key' },
     });
     fireEvent.click(screen.getByRole('button', { name: '验证并创建' }));
@@ -378,6 +378,7 @@ describe('AdminAppsTab', () => {
       expect(body.slug).toBe('new-app');
       expect(body.api_base_url).toBe('https://yiai.example.com/v1');
       expect(body.api_key).toBe('secret-api-key');
+      expect(body.app_type).toBe('chatflow');
       expect(body).not.toHaveProperty('sort_order');
       expect(body.enabled).toBe(true);
       expect(body).not.toHaveProperty('requires_new_conversation_inputs');

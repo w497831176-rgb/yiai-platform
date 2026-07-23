@@ -44,9 +44,12 @@ export interface ChangePasswordRequest {
   newPassword: string;
 }
 
+export type YiaiAppType = 'chatflow' | 'agent';
+
 export interface YiaiApp {
   id: string;
   slug: string;
+  app_type: YiaiAppType;
   name: string;
   description: string | null;
   icon: string | null;

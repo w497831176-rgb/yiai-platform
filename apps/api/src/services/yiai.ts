@@ -14,6 +14,7 @@ import { getLocalIconUrl } from './icon-cache.js';
 interface DbApp extends YiaiApp {
   api_base_url: string;
   api_key: string;
+  agent_input_form: UserInputFormField[] | null;
   icon_cache_filename: string | null;
   icon_cache_content_type: string | null;
   icon_cached_at: Date | null;
@@ -338,7 +339,7 @@ export async function findAppBySlug(pool: Pool, slug: string): Promise<DbApp | u
 
 export async function listEnabledApps(pool: Pool): Promise<YiaiApp[]> {
   const result = await pool.query<DbApp>(
-    `SELECT id, slug, name, description, icon, icon_type, icon_background, tags, sort_order,
+    `SELECT id, slug, app_type, name, description, icon, icon_type, icon_background, tags, sort_order,
             requires_new_conversation_inputs, created_at, updated_at,
             icon_cache_filename, icon_cached_at
      FROM yiai_apps
@@ -390,11 +391,13 @@ export async function bootstrapApp(pool: Pool, slug: string): Promise<AppBootstr
   const baseUrl = app.api_base_url.replace(/\/$/, '');
   const parameters = await yiaiGet<YiaiParametersResponse>(`${baseUrl}/parameters`, app.api_key);
   const iconType = app.icon_type ?? inferIconType(app.icon);
+  const agentInputForm = app.app_type === 'agent' ? normalizeUserInputForm(app.agent_input_form) : null;
 
   return {
     app: {
       id: app.id,
       slug: app.slug,
+      app_type: app.app_type,
       name: app.name || slug,
       description: app.description ?? null,
       icon: iconType === 'image' ? null : app.icon,
@@ -409,7 +412,7 @@ export async function bootstrapApp(pool: Pool, slug: string): Promise<AppBootstr
     },
     opening_statement: parameters.opening_statement ?? null,
     suggested_questions: parameters.suggested_questions ?? null,
-    user_input_form: normalizeUserInputForm(parameters.user_input_form),
+    user_input_form: agentInputForm ?? normalizeUserInputForm(parameters.user_input_form),
   };
 }
 
@@ -631,6 +634,7 @@ export function toSafeApp(
   return {
     id: app.id,
     slug: app.slug,
+    app_type: app.app_type,
     name: app.name,
     description: app.description,
     icon: iconType === 'image' ? null : app.icon,

@@ -220,6 +220,31 @@ describe('App Routes', () => {
     expect(url).toBe('https://yiai.example.com/v1/parameters');
   });
 
+  it('uses the platform Agent form when upstream parameters have no form', async () => {
+    await createTestApp(pool, {
+      slug: 'agent-charting',
+      app_type: 'agent',
+      agent_input_form: [{ type: 'text-input', label: 'Birth date', variable: 'birth_date', required: true }],
+      requires_new_conversation_inputs: true,
+    });
+    fetchMock.mockResolvedValueOnce(new Response(JSON.stringify({ user_input_form: [] })));
+    const app = await buildTestApp(pool);
+    const token = await loginUser(app, 'test_user', 'testpass');
+
+    const response = await app.inject({
+      method: 'GET',
+      url: '/api/apps/agent-charting/bootstrap',
+      headers: { Authorization: `Bearer ${token}` },
+    });
+
+    expect(response.statusCode).toBe(200);
+    const body = JSON.parse(response.body) as AppBootstrap;
+    expect(body.app.app_type).toBe('agent');
+    expect(body.user_input_form).toEqual([
+      { type: 'text-input', label: 'Birth date', variable: 'birth_date', required: true },
+    ]);
+  });
+
   it('returns conversations sorted by -updated_at', async () => {
     fetchMock.mockResolvedValueOnce(
       new Response(

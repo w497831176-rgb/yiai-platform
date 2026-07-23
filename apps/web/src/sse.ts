@@ -10,6 +10,7 @@ export interface ParsedSSE {
 
 export interface SSECallbacks {
   onMessage?: (data: Record<string, unknown>) => void;
+  onMessageReplace?: (data: Record<string, unknown>) => void;
   onMessageFile?: (data: Record<string, unknown>) => void;
   onMessageEnd?: (data: Record<string, unknown>) => void;
   onError?: (data: Record<string, unknown>) => void;
@@ -54,7 +55,11 @@ export function parseSSEBuffer(buffer: string): ParsedSSE {
 function dispatchEvent(event: SSEEvent, callbacks: SSECallbacks): void {
   switch (event.event) {
     case 'message':
+    case 'agent_message':
       callbacks.onMessage?.(event.data);
+      break;
+    case 'message_replace':
+      callbacks.onMessageReplace?.(event.data);
       break;
     case 'message_file':
       callbacks.onMessageFile?.(event.data);

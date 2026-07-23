@@ -1,5 +1,6 @@
 import type { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify';
 import type { Pool } from 'pg';
+import type { UserInputFormField, UserInputFormType, YiaiAppType } from '@yiai/shared';
 import { sortAppsByTagAndName } from '../services/app-order.js';
 import { authenticate } from '../auth/decorator.js';
 import { ensureDailyGift, getAllUserAccounts, getLedgerEntries, rechargeTokens } from '../services/token-account.js';
@@ -18,9 +19,11 @@ interface RechargeBody {
 
 interface CreateAppBody {
   slug?: string;
+  app_type?: YiaiAppType;
   api_base_url?: string;
   api_key?: string;
   enabled?: boolean;
+  agent_input_form?: unknown;
 }
 
 interface UpdateAppSettingsBody {
@@ -29,6 +32,7 @@ interface UpdateAppSettingsBody {
   description?: string;
   icon?: string;
   tags?: string[];
+  agent_input_form?: unknown;
 }
 
 interface UpdateAppConnectionBody {
@@ -39,6 +43,7 @@ interface UpdateAppConnectionBody {
 interface AdminAppRow {
   id: string;
   slug: string;
+  app_type: YiaiAppType;
   name: string;
   description: string | null;
   icon: string | null;
@@ -51,6 +56,7 @@ interface AdminAppRow {
   enabled: boolean;
   sort_order: number;
   requires_new_conversation_inputs: boolean;
+  agent_input_form: UserInputFormField[];
   created_at: string;
   updated_at: string;
   icon_cache_filename: string | null;
@@ -59,7 +65,7 @@ interface AdminAppRow {
 }
 
 const ADMIN_APP_COLUMNS = `id, slug, name, description, icon, icon_type, icon_background,
-  api_base_url, api_key, enabled, sort_order, requires_new_conversation_inputs,
+  api_base_url, api_key, enabled, sort_order, app_type, requires_new_conversation_inputs, agent_input_form,
   created_at, updated_at, icon_cache_filename, icon_cache_content_type, icon_cached_at, tags, icon_source`;
 
 function assertAdmin(request: FastifyRequest, reply: FastifyReply): boolean {
@@ -112,6 +118,80 @@ function normalizeTags(value: unknown): string[] | null {
   return unique;
 }
 
+function normalizeAppType(value: unknown): YiaiAppType | null {
+  if (value === undefined) {
+    return 'chatflow';
+  }
+  return value === 'chatflow' || value === 'agent' ? value : null;
+}
+
+function normalizeAgentInputForm(value: unknown): UserInputFormField[] | null {
+  if (value === undefined) {
+    return [];
+  }
+  if (!Array.isArray(value) || value.length > 20) {
+    return null;
+  }
+
+  const allowedTypes: UserInputFormType[] = ['text-input', 'paragraph', 'select'];
+  const variables = new Set<string>();
+  const fields: UserInputFormField[] = [];
+
+  for (const item of value) {
+    if (!item || typeof item !== 'object') return null;
+    const raw = item as Record<string, unknown>;
+    const type = raw.type;
+    const label = raw.label;
+    const variable = raw.variable;
+    if (
+      typeof type !== 'string' ||
+      !allowedTypes.includes(type as UserInputFormType) ||
+      typeof label !== 'string' ||
+      label.trim() === '' ||
+      label.length > 100 ||
+      typeof variable !== 'string' ||
+      !/^[A-Za-z_][A-Za-z0-9_]{0,63}$/.test(variable) ||
+      typeof raw.required !== 'boolean' ||
+      variables.has(variable)
+    ) {
+      return null;
+    }
+    variables.add(variable);
+
+    const field: UserInputFormField = {
+      type: type as UserInputFormType,
+      label: label.trim(),
+      variable,
+      required: raw.required,
+    };
+    if (raw.default !== undefined) {
+      if (typeof raw.default !== 'string' || raw.default.length > 1000) return null;
+      field.default = raw.default;
+    }
+    if (raw.options !== undefined) {
+      if (!Array.isArray(raw.options) || type !== 'select' || raw.options.length === 0 || raw.options.length > 100) return null;
+      const options = raw.options.map((option) => {
+        if (!option || typeof option !== 'object') return null;
+        const item = option as Record<string, unknown>;
+        if (
+          typeof item.label !== 'string' ||
+          item.label.trim() === '' ||
+          typeof item.value !== 'string' ||
+          item.value.trim() === ''
+        ) {
+          return null;
+        }
+        return { label: item.label.trim(), value: item.value.trim() };
+      });
+      if (options.some((option) => option === null)) return null;
+      field.options = options as NonNullable<UserInputFormField['options']>;
+    }
+    fields.push(field);
+  }
+
+  return fields;
+}
+
 function parsePlatformIcon(value: unknown):
   | { icon: string; iconType: 'emoji' | 'image'; imageUrl?: string }
   | undefined
@@ -162,6 +242,8 @@ function toAdminAppResponse(row: AdminAppRow, duplicateOfSlug: string | null = n
     api_key_configured: row.api_key !== '',
     api_key_preview: maskApiKey(row.api_key),
     enabled: row.enabled,
+    app_type: row.app_type,
+    agent_input_form: row.app_type === 'agent' ? row.agent_input_form : [],
     connection_duplicate_of_slug: duplicateOfSlug,
   };
 }
@@ -238,7 +320,7 @@ async function updateMetadata(
       iconFields.icon,
       iconFields.icon_type,
       iconFields.icon_background,
-      metadata.requires_new_conversation_inputs,
+      app.app_type === 'agent' ? app.requires_new_conversation_inputs : metadata.requires_new_conversation_inputs,
       metadata.tags,
       connection?.apiBaseUrl ?? null,
       connection?.apiKey ?? null,
@@ -316,6 +398,7 @@ export function adminRoutes(fastify: FastifyInstance, options: { pool: Pool }) {
     if (!assertAdmin(request, reply)) return;
     const body = request.body as CreateAppBody;
     const slug = isNonEmptyString(body.slug) ? body.slug.trim() : '';
+    const appType = normalizeAppType(body.app_type);
     const apiBaseUrl = normalizeBaseUrl(body.api_base_url);
 
     if (!/^[a-zA-Z0-9_-]+$/.test(slug)) {
@@ -323,6 +406,9 @@ export function adminRoutes(fastify: FastifyInstance, options: { pool: Pool }) {
     }
     if (!apiBaseUrl) {
       return reply.status(400).send({ error: '请输入有效的 YIAI API Base URL' });
+    }
+    if (!appType) {
+      return reply.status(400).send({ error: '应用类型只能是 Chatflow 或 Agent' });
     }
     if (!isNonEmptyString(body.api_key)) {
       return reply.status(400).send({ error: 'YIAI API Key 不能为空' });
@@ -334,13 +420,17 @@ export function adminRoutes(fastify: FastifyInstance, options: { pool: Pool }) {
 
     const metadata = await fetchMetadata(reply, apiBaseUrl, body.api_key);
     if (!metadata) return;
+    const agentInputForm = appType === 'agent' ? normalizeAgentInputForm(body.agent_input_form) : [];
+    if (agentInputForm === null) {
+      return reply.status(400).send({ error: 'Agent 新对话表单格式不正确' });
+    }
     const iconFields = extractStoredIconFields(metadata);
 
     try {
       const result = await pool.query<AdminAppRow>(
         `INSERT INTO yiai_apps
-          (slug, name, description, icon, icon_type, icon_background, tags, icon_source, api_base_url, api_key, enabled, sort_order, requires_new_conversation_inputs)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, 'yiai', $8, $9, $10, $11, $12)
+          (slug, name, description, icon, icon_type, icon_background, tags, icon_source, api_base_url, api_key, enabled, sort_order, app_type, requires_new_conversation_inputs, agent_input_form)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, 'yiai', $8, $9, $10, $11, $12, $13, $14)
          RETURNING ${ADMIN_APP_COLUMNS}`,
         [
           slug,
@@ -354,7 +444,9 @@ export function adminRoutes(fastify: FastifyInstance, options: { pool: Pool }) {
           body.api_key,
           body.enabled ?? true,
           0,
-          metadata.requires_new_conversation_inputs,
+          appType,
+          appType === 'agent' ? agentInputForm.length > 0 : metadata.requires_new_conversation_inputs,
+          JSON.stringify(agentInputForm),
         ]
       );
       const refreshed = await refreshAndLoadApp(pool, result.rows[0]);
@@ -422,7 +514,8 @@ export function adminRoutes(fastify: FastifyInstance, options: { pool: Pool }) {
       body.name === undefined &&
       body.description === undefined &&
       body.icon === undefined &&
-      body.tags === undefined
+      body.tags === undefined &&
+      body.agent_input_form === undefined
     ) {
       return reply.status(400).send({ error: '请至少修改一项平台设置' });
     }
@@ -451,6 +544,13 @@ export function adminRoutes(fastify: FastifyInstance, options: { pool: Pool }) {
     if (body.icon !== undefined && iconUpdate === null) {
       return reply.status(400).send({ error: '图标仅支持 Emoji 或 http(s) 图片地址' });
     }
+    const agentInputForm = body.agent_input_form === undefined ? undefined : normalizeAgentInputForm(body.agent_input_form);
+    if (body.agent_input_form !== undefined && app.app_type !== 'agent') {
+      return reply.status(400).send({ error: '只有 Agent 可以设置新对话表单' });
+    }
+    if (agentInputForm === null) {
+      return reply.status(400).send({ error: 'Agent 新对话表单格式不正确' });
+    }
 
     if (iconUpdate?.imageUrl) {
       const cached = await cacheImageIconUrl(pool, app, iconUpdate.imageUrl);
@@ -470,6 +570,10 @@ export function adminRoutes(fastify: FastifyInstance, options: { pool: Pool }) {
     if (name !== undefined) addValue('name', name);
     if (description !== undefined) addValue('description', description);
     if (tags !== undefined) addValue('tags', tags);
+    if (agentInputForm !== undefined) {
+      addValue('agent_input_form', JSON.stringify(agentInputForm));
+      addValue('requires_new_conversation_inputs', agentInputForm.length > 0);
+    }
     if (iconUpdate) {
       addValue('icon', iconUpdate.icon);
       addValue('icon_type', iconUpdate.iconType);

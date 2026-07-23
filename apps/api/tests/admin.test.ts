@@ -171,6 +171,61 @@ describe('Admin Routes', () => {
     expect(created.requires_new_conversation_inputs).toBe(false);
   });
 
+  it('creates an Agent with a platform-owned first-conversation form', async () => {
+    const app = await buildApp(pool);
+    await createTestUser(pool, 'admin_user', 'admin', 'testpass');
+    mockUpstreamMetadata(fetchMock, { parameters: { user_input_form: [] } });
+    const token = await login(app, 'admin_user', 'testpass');
+
+    const response = await app.inject({
+      method: 'POST',
+      url: '/api/admin/apps',
+      headers: { Authorization: `Bearer ${token}` },
+      payload: {
+        slug: 'charting-agent',
+        app_type: 'agent',
+        api_base_url: 'https://yiai.example.com/v1',
+        api_key: 'agent-key',
+        agent_input_form: [{ type: 'text-input', label: 'Birth date', variable: 'birth_date', required: true }],
+      },
+    });
+
+    expect(response.statusCode).toBe(201);
+    const created = JSON.parse(response.body) as Record<string, unknown>;
+    expect(created.app_type).toBe('agent');
+    expect(created.requires_new_conversation_inputs).toBe(true);
+    expect(created.agent_input_form).toEqual([
+      { type: 'text-input', label: 'Birth date', variable: 'birth_date', required: true },
+    ]);
+    expect(created).not.toHaveProperty('api_key');
+  });
+
+  it('keeps the Agent form when YIAI metadata is synchronized', async () => {
+    const app = await buildApp(pool);
+    await createTestUser(pool, 'admin_user', 'admin', 'testpass');
+    const appId = await createTestApp(pool, {
+      slug: 'sync-agent',
+      app_type: 'agent',
+      agent_input_form: [{ type: 'text-input', label: 'Birth date', variable: 'birth_date', required: true }],
+      requires_new_conversation_inputs: true,
+    });
+    mockUpstreamMetadata(fetchMock, { parameters: { user_input_form: [] } });
+    const token = await login(app, 'admin_user', 'testpass');
+
+    const response = await app.inject({
+      method: 'POST',
+      url: `/api/admin/apps/${appId}/sync`,
+      headers: { Authorization: `Bearer ${token}` },
+    });
+
+    expect(response.statusCode).toBe(200);
+    const synced = JSON.parse(response.body) as Record<string, unknown>;
+    expect(synced.requires_new_conversation_inputs).toBe(true);
+    expect(synced.agent_input_form).toEqual([
+      { type: 'text-input', label: 'Birth date', variable: 'birth_date', required: true },
+    ]);
+  });
+
   it('returns 400 when upstream metadata sync fails', async () => {
     const app = await buildApp(pool);
     await createTestUser(pool, 'admin_user', 'admin', 'testpass');

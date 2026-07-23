@@ -105,6 +105,25 @@ describe('readSSEStream', () => {
     expect(releaseLock).toHaveBeenCalled();
   });
 
+  it('treats Agent chunks as messages and dispatches message replacements', async () => {
+    const onMessage = vi.fn();
+    const onMessageReplace = vi.fn();
+    const encoder = new TextEncoder();
+    let index = 0;
+    const chunks = [
+      encoder.encode('data: {"event":"agent_message","answer":"draft"}\n\ndata: {"event":"message_replace","answer":"final"}\n\n'),
+    ];
+    const reader = {
+      read: () => Promise.resolve(index < chunks.length ? { done: false, value: chunks[index++] } : { done: true, value: undefined }),
+      releaseLock: vi.fn(),
+    } as unknown as ReadableStreamDefaultReader<Uint8Array>;
+
+    await readSSEStream(reader, { onMessage, onMessageReplace });
+
+    expect(onMessage).toHaveBeenCalledWith({ event: 'agent_message', answer: 'draft' });
+    expect(onMessageReplace).toHaveBeenCalledWith({ event: 'message_replace', answer: 'final' });
+  });
+
   it('stops early when abort signal is triggered', async () => {
     const onMessage = vi.fn();
     const controller = new AbortController();

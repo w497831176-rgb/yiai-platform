@@ -1,6 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import './App.css';
-import { MarkdownMessage } from './MarkdownMessage';
 import { readSSEStream } from './sse';
 import { startChatStream, type ChatRequestBody } from './chat';
 import {
@@ -23,6 +22,7 @@ interface AuthResponse {
 interface YiaiApp {
   id: string;
   slug: string;
+  app_type: 'chatflow' | 'agent';
   name: string;
   description: string | null;
   icon: string | null;
@@ -122,6 +122,7 @@ interface AdminUser {
 interface AdminApp {
   id: string;
   slug: string;
+  app_type: 'chatflow' | 'agent';
   name: string;
   description: string | null;
   icon: string | null;
@@ -135,6 +136,7 @@ interface AdminApp {
   enabled: boolean;
   sort_order: number;
   requires_new_conversation_inputs: boolean;
+  agent_input_form: UserInputFormField[];
   connection_duplicate_of_slug?: string | null;
 }
 
@@ -996,6 +998,21 @@ export function ChatPage({
               return next;
             });
           },
+          onMessageReplace: (data) => {
+            const answer = typeof data.answer === 'string' ? data.answer : '';
+            setMessages((prev) => {
+              const next = [...prev];
+              const last = next[next.length - 1];
+              if (last.role === 'assistant') {
+                next[next.length - 1] = {
+                  ...last,
+                  rawContent: answer,
+                  content: stripThinkContent(answer),
+                };
+              }
+              return next;
+            });
+          },
           onMessageFile: (data) => {
             const url = typeof data.url === 'string' ? data.url : '';
             const type = typeof data.type === 'string' ? data.type : 'image';
@@ -1012,6 +1029,7 @@ export function ChatPage({
             });
           },
           onMessageEnd: (data) => {
+            setLoading(false);
             if (typeof data.conversation_id === 'string' && !activeConversationId) {
               setActiveConversationId(data.conversation_id);
               void loadConversations();
@@ -1167,11 +1185,7 @@ export function ChatPage({
             <div key={idx} className={`message ${msg.role}`}>
               <div className="message-content">
                 <div className="bubble">
-                  {msg.role === 'assistant' ? (
-                    <MarkdownMessage content={msg.content} />
-                  ) : (
-                    msg.content
-                  )}
+                  {msg.content}
                   {msg.files && msg.files.length > 0 && (
                     <div className="message-files">
                       {msg.files.map((file, fidx) => (
@@ -1739,7 +1753,7 @@ export function LegacyAdminAppsTab() {
                 />
               </label>
               <label>
-                YIAI Chatflow API Base URL
+                YIAI API Base URL
                 <input
                   type="text"
                   value={createForm.api_base_url}
@@ -1750,7 +1764,7 @@ export function LegacyAdminAppsTab() {
                 />
               </label>
               <label>
-                YIAI Chatflow API Key
+                YIAI API Key
                 <input
                   type="password"
                   value={createForm.api_key}
@@ -1868,8 +1882,10 @@ function AdminAppsTab() {
   const [message, setMessage] = useState('');
   const [createForm, setCreateForm] = useState({
     slug: '',
+    app_type: 'chatflow' as 'chatflow' | 'agent',
     api_base_url: 'https://yiai.charprint.com/v1',
     api_key: '',
+    agent_input_form: '[]',
     enabled: true,
   });
   const [createFormError, setCreateFormError] = useState('');
@@ -1891,6 +1907,15 @@ function AdminAppsTab() {
   }, [loadApps]);
 
   const validateCreateForm = (): string | null => {
+    if (createForm.app_type === 'agent') {
+      try {
+        if (!Array.isArray(JSON.parse(createForm.agent_input_form))) {
+          return 'Agent 新对话表单必须是 JSON 数组';
+        }
+      } catch {
+        return 'Agent 新对话表单不是有效的 JSON';
+      }
+    }
     if (!createForm.slug.trim()) return '应用标识不能为空';
     if (!/^[a-zA-Z0-9_-]+$/.test(createForm.slug.trim())) {
       return '应用标识只能包含字母、数字、下划线和连字符';
@@ -1910,14 +1935,26 @@ function AdminAppsTab() {
       return;
     }
 
+    let agentInputForm: unknown[] | undefined;
+    if (createForm.app_type === 'agent') {
+      const parsed: unknown = JSON.parse(createForm.agent_input_form);
+      if (!Array.isArray(parsed)) {
+        setCreateFormError('Agent 新对话表单必须是 JSON 数组');
+        return;
+      }
+      agentInputForm = parsed;
+    }
+
     void (async () => {
       try {
         await api('/admin/apps', {
           method: 'POST',
           body: JSON.stringify({
             slug: createForm.slug.trim(),
+            app_type: createForm.app_type,
             api_base_url: createForm.api_base_url.trim(),
             api_key: createForm.api_key,
+            ...(agentInputForm !== undefined ? { agent_input_form: agentInputForm } : {}),
             enabled: createForm.enabled,
           }),
         });
@@ -1925,8 +1962,10 @@ function AdminAppsTab() {
         setCreateFormError('');
         setCreateForm({
           slug: '',
+          app_type: 'chatflow',
           api_base_url: 'https://yiai.charprint.com/v1',
           api_key: '',
+          agent_input_form: '[]',
           enabled: true,
         });
         setMessage('应用已创建，并已从 YIAI 同步信息');
@@ -1963,6 +2002,18 @@ function AdminAppsTab() {
       .split(/[,，]/)
       .map((tag) => tag.trim())
       .filter((tag) => tag !== '');
+    let agentInputForm: unknown[] | undefined;
+    if (settingsApp.app_type === 'agent') {
+      const raw = (form.elements.namedItem('agent_input_form') as HTMLTextAreaElement).value;
+      try {
+        const parsed: unknown = JSON.parse(raw);
+        if (!Array.isArray(parsed)) throw new Error();
+        agentInputForm = parsed;
+      } catch {
+        setError('Agent 新对话表单必须是 JSON 数组');
+        return;
+      }
+    }
     setError('');
     setMessage('');
 
@@ -1976,6 +2027,7 @@ function AdminAppsTab() {
             description,
             tags,
             ...(icon !== '' ? { icon } : {}),
+            ...(agentInputForm !== undefined ? { agent_input_form: agentInputForm } : {}),
           }),
         });
         setSettingsApp(null);
@@ -2033,10 +2085,10 @@ function AdminAppsTab() {
       {message && <p className="success-banner">{message}</p>}
       <div className="admin-actions">
         <div>
-          <h2>Chatflow 应用</h2>
-          <p className="input-hint">可在平台设置手工调整名称、说明、图标和标签；点击“同步 YIAI”会用 YIAI 最新信息覆盖这些属性。</p>
+          <h2>应用</h2>
+          <p className="input-hint">Chatflow 会自动识别 YIAI 表单；Agent 的首次信息表单由平台保存，并不会被同步覆盖。</p>
         </div>
-        <button onClick={() => { setCreating(true); }}>新增 Chatflow 应用</button>
+        <button onClick={() => { setCreating(true); }}>新增应用</button>
       </div>
 
       {loading && <p>加载中...</p>}
@@ -2045,6 +2097,7 @@ function AdminAppsTab() {
           <thead>
             <tr>
               <th>应用</th>
+              <th>类型</th>
               <th>连接</th>
               <th>启用</th>
               <th>新对话采集</th>
@@ -2067,6 +2120,7 @@ function AdminAppsTab() {
                     </span>
                   </div>
                 </td>
+                <td>{app.app_type === 'agent' ? 'Agent' : 'Chatflow'}</td>
                 <td className="admin-connection-status">
                   {app.connection_duplicate_of_slug ? (
                     <span className="error">与「{app.connection_duplicate_of_slug}」连接重复</span>
@@ -2102,10 +2156,20 @@ function AdminAppsTab() {
       {creating && (
         <div className="modal-overlay" onClick={() => { setCreating(false); }}>
           <div className="modal wide" onClick={(event) => { event.stopPropagation(); }}>
-            <h3>新增 Chatflow 应用</h3>
-            <p className="input-hint">保存前会验证 YIAI 连接并自动读取名称、说明、图标和采集规则。同一套连接不能重复添加。</p>
+            <h3>新增应用</h3>
+            <p className="input-hint">Chatflow 会自动识别 YIAI 表单；Agent 的首次信息表单由平台保存，并不会被同步覆盖。</p>
             {createFormError && <p className="error">{createFormError}</p>}
             <form onSubmit={handleCreateSubmit}>
+              <label>
+                应用类型
+                <select
+                  value={createForm.app_type}
+                  onChange={(event: React.ChangeEvent<HTMLSelectElement>) => { setCreateForm((previous) => ({ ...previous, app_type: event.currentTarget.value as 'chatflow' | 'agent' })); }}
+                >
+                  <option value="chatflow">Chatflow</option>
+                  <option value="agent">Agent</option>
+                </select>
+              </label>
               <label>
                 平台应用标识 slug
                 <input
@@ -2116,7 +2180,7 @@ function AdminAppsTab() {
                 />
               </label>
               <label>
-                YIAI Chatflow API Base URL
+                YIAI API Base URL
                 <input
                   type="url"
                   value={createForm.api_base_url}
@@ -2125,7 +2189,7 @@ function AdminAppsTab() {
                 />
               </label>
               <label>
-                YIAI Chatflow API Key
+                YIAI API Key
                 <input
                   type="password"
                   value={createForm.api_key}
@@ -2133,6 +2197,16 @@ function AdminAppsTab() {
                   required
                 />
               </label>
+              {createForm.app_type === 'agent' && (
+                <label>
+                  Agent 新对话信息表单（JSON 数组，可留空）
+                  <textarea
+                    value={createForm.agent_input_form}
+                    onChange={(event) => { setCreateForm((previous) => ({ ...previous, agent_input_form: event.target.value })); }}
+                    placeholder={'[{"type":"text-input","label":"出生日期","variable":"birth_date","required":true}]'}
+                  />
+                </label>
+              )}
               <label className="checkbox">
                 <input
                   type="checkbox"
@@ -2172,6 +2246,12 @@ function AdminAppsTab() {
                 标签（用逗号分隔）
                 <input name="tags" type="text" defaultValue={(settingsApp.tags ?? []).join('，')} placeholder="例如：哲学，国学" />
               </label>
+              {settingsApp.app_type === 'agent' && (
+                <label>
+                  Agent 新对话信息表单（JSON 数组）
+                  <textarea name="agent_input_form" defaultValue={JSON.stringify(settingsApp.agent_input_form, null, 2)} />
+                </label>
+              )}
               <label className="checkbox">
                 <input name="enabled" type="checkbox" defaultChecked={settingsApp.enabled} />
                 在首页启用此应用
@@ -2192,7 +2272,7 @@ function AdminAppsTab() {
             <p className="input-hint">保存时会先向 YIAI 验证，再同步名称、说明、图标和新对话采集规则。API Key 留空会保留原值且永不回显。</p>
             <form onSubmit={handleConnectionSubmit}>
               <label>
-                YIAI Chatflow API Base URL
+                YIAI API Base URL
                 <input name="api_base_url" type="url" defaultValue={connectionApp.api_base_url} required />
               </label>
               <label>
