@@ -162,4 +162,47 @@ describe('ChatPage latest conversation inputs restore', () => {
       expect(screen.getByRole('table')).toBeInTheDocument();
     });
   });
+
+  it('copies both user messages and AI answers', async () => {
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    Object.defineProperty(navigator, 'clipboard', {
+      configurable: true,
+      value: { writeText },
+    });
+
+    fetchMock.mockImplementation((input) => {
+      const url = typeof input === 'string' ? input : input.url;
+      if (url.endsWith('/bootstrap')) {
+        return Promise.resolve(new Response(JSON.stringify({
+          app: { id: 'copy-app', slug: 'copy-app', name: 'Copy App', description: null, icon: null, sort_order: 1, requires_new_conversation_inputs: false, created_at: '', updated_at: '' },
+          opening_statement: null, suggested_questions: [], user_input_form: null,
+        })));
+      }
+      if (url.endsWith('/conversations')) return Promise.resolve(new Response(JSON.stringify([{ id: 'copy-conv', name: 'Copy', inputs: {}, status: 'normal', updated_at: 1, created_at: 1 }])));
+      if (url.includes('/conversations/') && url.endsWith('/messages')) {
+        return Promise.resolve(new Response(JSON.stringify([{ id: 'copy-message', conversation_id: 'copy-conv', query: '用户问题', answer: '**AI 回答**', created_at: 1 }])));
+      }
+      return Promise.reject(new Error(`Unexpected fetch: ${url}`));
+    });
+
+    render(
+      <ChatPage
+        slug="copy-app"
+        user={{ id: 'user-1', username: 'tester', role: 'user' }}
+        account={{ gift_tokens: 100, recharge_tokens: 50, daily_gift_amount: 10, gift_tokens_max: 200, last_gift_date: null }}
+        onBack={() => {}}
+        onLogout={() => {}}
+      />
+    );
+
+    await waitFor(() => {
+      expect(screen.getByRole('button', { name: '复制用户消息' })).toBeInTheDocument();
+      expect(screen.getByRole('button', { name: '复制 AI 回答' })).toBeInTheDocument();
+    });
+
+    fireEvent.click(screen.getByRole('button', { name: '复制用户消息' }));
+    await waitFor(() => { expect(writeText).toHaveBeenLastCalledWith('用户问题'); });
+    fireEvent.click(screen.getByRole('button', { name: '复制 AI 回答' }));
+    await waitFor(() => { expect(writeText).toHaveBeenLastCalledWith('**AI 回答**'); });
+  });
 });

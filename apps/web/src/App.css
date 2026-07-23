@@ -670,6 +670,31 @@ button:disabled {
   margin-top: 0.25rem;
 }
 
+.message-actions {
+  display: flex;
+  margin-top: 0.2rem;
+}
+
+.message.user .message-actions {
+  justify-content: flex-end;
+}
+
+.copy-message {
+  min-height: auto;
+  padding: 0.15rem 0.45rem;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  color: #64748b;
+  font-size: 0.75rem;
+  line-height: 1.25;
+}
+
+.copy-message:hover {
+  background: #e2e8f0;
+  color: #334155;
+}
+
 .input-bar {
   display: flex;
   gap: 0.5rem;

@@ -545,6 +545,51 @@ describe('Admin Routes', () => {
     expect(response.statusCode).toBe(409);
   });
 
+  it('allows an admin to reset a user password without returning it', async () => {
+    const app = await buildApp(pool);
+    await createTestUser(pool, 'admin_user', 'admin', 'testpass');
+    const targetUserId = await createTestUser(pool, 'target_user', 'user', 'oldpass');
+    const token = await login(app, 'admin_user', 'testpass');
+
+    const response = await app.inject({
+      method: 'PUT',
+      url: `/api/admin/users/${targetUserId}/password`,
+      headers: { Authorization: `Bearer ${token}` },
+      payload: { newPassword: 'newpass123' },
+    });
+
+    expect(response.statusCode).toBe(200);
+    const body = JSON.parse(response.body) as Record<string, unknown>;
+    expect(body).toEqual({ id: targetUserId, username: 'target_user', password_changed: true });
+    expect(response.body).not.toContain('newpass123');
+
+    const stored = await pool.query<{ password_hash: string }>('SELECT password_hash FROM users WHERE id = $1', [targetUserId]);
+    expect(stored.rows[0].password_hash).toBe('hashed-newpass123');
+
+    const newLogin = await app.inject({
+      method: 'POST',
+      url: '/api/auth/login',
+      payload: { username: 'target_user', password: 'newpass123' },
+    });
+    expect(newLogin.statusCode).toBe(200);
+  });
+
+  it('rejects a too-short admin password reset', async () => {
+    const app = await buildApp(pool);
+    await createTestUser(pool, 'admin_user', 'admin', 'testpass');
+    const targetUserId = await createTestUser(pool, 'target_user', 'user', 'oldpass');
+    const token = await login(app, 'admin_user', 'testpass');
+
+    const response = await app.inject({
+      method: 'PUT',
+      url: `/api/admin/users/${targetUserId}/password`,
+      headers: { Authorization: `Bearer ${token}` },
+      payload: { newPassword: 'short' },
+    });
+
+    expect(response.statusCode).toBe(400);
+  });
+
   it('prevents non-admin users from accessing admin endpoints', async () => {
     const app = await buildApp(pool);
     const userId = await createTestUser(pool, 'normal_user');
@@ -555,6 +600,7 @@ describe('Admin Routes', () => {
       { method: 'GET' as const, url: '/api/admin/users' },
       { method: 'GET' as const, url: `/api/admin/users/${userId}/ledger` },
       { method: 'POST' as const, url: `/api/admin/users/${userId}/recharge`, payload: { amount: 100 } },
+      { method: 'PUT' as const, url: `/api/admin/users/${userId}/password`, payload: { newPassword: 'newpass123' } },
       { method: 'GET' as const, url: '/api/admin/apps' },
       { method: 'POST' as const, url: '/api/admin/apps', payload: { slug: 'x', api_base_url: 'https://x', api_key: 'k' } },
       { method: 'PATCH' as const, url: `/api/admin/apps/${appId}`, payload: { name: 'x' } },

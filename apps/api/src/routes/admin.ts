@@ -3,6 +3,7 @@ import type { Pool } from 'pg';
 import type { UserInputFormField, UserInputFormType, YiaiAppType } from '@yiai/shared';
 import { sortAppsByTagAndName } from '../services/app-order.js';
 import { authenticate } from '../auth/decorator.js';
+import { hashPassword } from '../auth/password.js';
 import { ensureDailyGift, getAllUserAccounts, getLedgerEntries, rechargeTokens } from '../services/token-account.js';
 import { syncAppMetadata, toSafeApp, YiaiUpstreamError, type UpstreamAppMetadata } from '../services/yiai.js';
 import { cacheImageIconUrl, getLocalIconUrl, refreshAppIconCache } from '../services/icon-cache.js';
@@ -15,6 +16,10 @@ interface AdminParams {
 interface RechargeBody {
   amount: number;
   note?: string;
+}
+
+interface ResetPasswordBody {
+  newPassword?: string;
 }
 
 interface CreateAppBody {
@@ -385,6 +390,28 @@ export function adminRoutes(fastify: FastifyInstance, options: { pool: Pool }) {
 
     const account = await rechargeTokens(pool, params.userId, body.amount, admin.id, body.note);
     return { gift_tokens: account.gift_tokens, recharge_tokens: account.recharge_tokens };
+  });
+
+  fastify.put('/admin/users/:userId/password', { preHandler: authenticate }, async (request, reply) => {
+    if (!assertAdmin(request, reply)) return;
+    const params = request.params as AdminParams;
+    const body = request.body as ResetPasswordBody | undefined;
+
+    if (typeof body?.newPassword !== 'string' || body.newPassword.length < 6) {
+      return reply.status(400).send({ error: '新密码至少需要 6 位' });
+    }
+
+    const passwordHash = await hashPassword(body.newPassword);
+    const result = await pool.query<{ id: string; username: string }>(
+      'UPDATE users SET password_hash = $2, updated_at = NOW() WHERE id = $1 RETURNING id, username',
+      [params.userId, passwordHash]
+    );
+
+    if (result.rowCount === 0) {
+      return reply.status(404).send({ error: '用户不存在' });
+    }
+
+    return { id: result.rows[0].id, username: result.rows[0].username, password_changed: true };
   });
 
   fastify.get('/admin/apps', { preHandler: authenticate }, async (request, reply) => {

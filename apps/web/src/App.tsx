@@ -164,6 +164,29 @@ function formatMessageMeta(msg: ChatMessage): string {
   return parts.join(' · ');
 }
 
+async function copyMessageText(text: string): Promise<void> {
+  try {
+    await navigator.clipboard.writeText(text);
+    return;
+  } catch {
+    // LAN HTTP pages can lack Clipboard API permission; use the legacy fallback below.
+  }
+
+  const textarea = document.createElement('textarea');
+  textarea.value = text;
+  textarea.setAttribute('readonly', '');
+  textarea.style.position = 'fixed';
+  textarea.style.opacity = '0';
+  document.body.appendChild(textarea);
+  textarea.select();
+  // eslint-disable-next-line @typescript-eslint/no-deprecated -- fallback for browsers without Clipboard API permission.
+  const copied = document.execCommand('copy');
+  textarea.remove();
+  if (!copied) {
+    throw new Error('浏览器不支持复制');
+  }
+}
+
 async function api<T>(path: string, options: RequestInit = {}): Promise<T> {
   const token = localStorage.getItem(TOKEN_KEY);
   const baseHeaders: Record<string, string> = {
@@ -709,6 +732,7 @@ export function ChatPage({
   const [conversations, setConversations] = useState<YiaiConversation[]>([]);
   const [activeConversationId, setActiveConversationId] = useState<string | undefined>(undefined);
   const [messages, setMessages] = useState<ChatMessage[]>([]);
+  const [copiedMessageIndex, setCopiedMessageIndex] = useState<number | null>(null);
   const [input, setInput] = useState('');
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
@@ -730,6 +754,17 @@ export function ChatPage({
 
   const scrollToBottom = () => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+  };
+
+  const handleCopyMessage = (index: number, content: string) => {
+    void (async () => {
+      try {
+        await copyMessageText(content);
+        setCopiedMessageIndex(index);
+      } catch (err) {
+        setError(err instanceof Error ? err.message : '复制失败，请手动复制');
+      }
+    })();
   };
 
   useEffect(() => {
@@ -1199,6 +1234,16 @@ export function ChatPage({
                   (msg.usage !== undefined || normalizeYiaiTimestamp(msg.createdAt) !== null) && (
                     <div className="message-meta">{formatMessageMeta(msg)}</div>
                   )}
+                <div className="message-actions">
+                  <button
+                    type="button"
+                    className="copy-message"
+                    onClick={() => { handleCopyMessage(idx, msg.content); }}
+                    aria-label={msg.role === 'assistant' ? '复制 AI 回答' : '复制用户消息'}
+                  >
+                    {copiedMessageIndex === idx ? '已复制' : '复制'}
+                  </button>
+                </div>
               </div>
             </div>
           ))}
@@ -1370,6 +1415,9 @@ function AdminUsersTab() {
   const [rechargeUser, setRechargeUser] = useState<AdminUser | null>(null);
   const [rechargeAmount, setRechargeAmount] = useState('');
   const [rechargeNote, setRechargeNote] = useState('');
+  const [passwordUser, setPasswordUser] = useState<AdminUser | null>(null);
+  const [newPassword, setNewPassword] = useState('');
+  const [confirmPassword, setConfirmPassword] = useState('');
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
   const [message, setMessage] = useState('');
@@ -1425,6 +1473,39 @@ function AdminUsersTab() {
     })();
   };
 
+  const closePasswordReset = () => {
+    setPasswordUser(null);
+    setNewPassword('');
+    setConfirmPassword('');
+  };
+
+  const handlePasswordReset = (e: React.SyntheticEvent<HTMLFormElement>) => {
+    e.preventDefault();
+    if (!passwordUser) return;
+    setError('');
+    if (newPassword.length < 6) {
+      setError('新密码至少需要 6 位');
+      return;
+    }
+    if (newPassword !== confirmPassword) {
+      setError('两次输入的密码不一致');
+      return;
+    }
+
+    void (async () => {
+      try {
+        await api(`/admin/users/${passwordUser.id}/password`, {
+          method: 'PUT',
+          body: JSON.stringify({ newPassword }),
+        });
+        setMessage(`已重设 ${passwordUser.username} 的密码`);
+        closePasswordReset();
+      } catch (err) {
+        setError(err instanceof Error ? err.message : '重设密码失败');
+      }
+    })();
+  };
+
   return (
     <div className="admin-tab">
       {error && <p className="error-banner">{error}</p>}
@@ -1456,6 +1537,9 @@ function AdminUsersTab() {
                   </button>
                   <button className="secondary" onClick={() => { setRechargeUser(u); }}>
                     充值
+                  </button>
+                  <button className="secondary" onClick={() => { setPasswordUser(u); }}>
+                    重设密码
                   </button>
                 </td>
               </tr>
@@ -1531,6 +1615,44 @@ function AdminUsersTab() {
                   取消
                 </button>
                 <button type="submit">确认充值</button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {passwordUser && (
+        <div className="modal-overlay" onClick={closePasswordReset}>
+          <div className="modal" onClick={(e) => { e.stopPropagation(); }}>
+            <h3>重设 {passwordUser.username} 的密码</h3>
+            <form onSubmit={handlePasswordReset}>
+              <label>
+                新密码（至少 6 位）
+                <input
+                  type="password"
+                  value={newPassword}
+                  onChange={(e) => { setNewPassword(e.target.value); }}
+                  minLength={6}
+                  required
+                  autoComplete="new-password"
+                />
+              </label>
+              <label>
+                确认新密码
+                <input
+                  type="password"
+                  value={confirmPassword}
+                  onChange={(e) => { setConfirmPassword(e.target.value); }}
+                  minLength={6}
+                  required
+                  autoComplete="new-password"
+                />
+              </label>
+              <div className="modal-actions">
+                <button type="button" className="secondary" onClick={closePasswordReset}>
+                  取消
+                </button>
+                <button type="submit">确认重设</button>
               </div>
             </form>
           </div>
