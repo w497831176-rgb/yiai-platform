@@ -205,4 +205,71 @@ describe('ChatPage latest conversation inputs restore', () => {
     fireEvent.click(screen.getByRole('button', { name: '复制 AI 回答' }));
     await waitFor(() => { expect(writeText).toHaveBeenLastCalledWith('**AI 回答**'); });
   });
+
+  it('deletes a conversation without sending an empty JSON request body', async () => {
+    const confirm = vi.spyOn(window, 'confirm').mockReturnValue(true);
+    fetchMock.mockImplementation((input, init) => {
+      const url = typeof input === 'string' ? input : input.url;
+      if (url.endsWith('/bootstrap')) {
+        return Promise.resolve(new Response(JSON.stringify({
+          app: { id: 'delete-app', slug: 'delete-app', name: 'Delete App', description: null, icon: null, sort_order: 1, requires_new_conversation_inputs: false, created_at: '', updated_at: '' },
+          opening_statement: null, suggested_questions: [], user_input_form: null,
+        })));
+      }
+      if (url.endsWith('/conversations') && init?.method !== 'DELETE') {
+        return Promise.resolve(new Response(JSON.stringify([{ id: 'delete-conv', name: '待删除会话', inputs: {}, status: 'normal', updated_at: 1, created_at: 1 }])));
+      }
+      if (url.includes('/conversations/delete-conv') && init?.method === 'DELETE') {
+        return Promise.resolve(new Response(null, { status: 204 }));
+      }
+      if (url.includes('/conversations/') && url.endsWith('/messages')) return Promise.resolve(new Response(JSON.stringify([])));
+      return Promise.reject(new Error(`Unexpected fetch: ${url}`));
+    });
+
+    render(
+      <ChatPage
+        slug="delete-app"
+        user={{ id: 'user-1', username: 'tester', role: 'user' }}
+        account={{ gift_tokens: 100, recharge_tokens: 50, daily_gift_amount: 10, gift_tokens_max: 200, last_gift_date: null }}
+        onBack={() => {}}
+        onLogout={() => {}}
+      />
+    );
+
+    await waitFor(() => { expect(screen.getByText('待删除会话')).toBeInTheDocument(); });
+    fireEvent.click(screen.getByRole('button', { name: '删除' }));
+
+    await waitFor(() => {
+      const deleteCall = fetchMock.mock.calls.find(([input, init]) => {
+        const url = typeof input === 'string' ? input : input.url;
+        return url.includes('/conversations/delete-conv') && init?.method === 'DELETE';
+      });
+      expect(deleteCall).toBeDefined();
+      const headers = deleteCall?.[1]?.headers as Record<string, string>;
+      expect(headers).not.toHaveProperty('Content-Type');
+      expect(headers).not.toHaveProperty('content-type');
+      expect(screen.queryByText('待删除会话')).not.toBeInTheDocument();
+    });
+    confirm.mockRestore();
+  });
+
+  it('keeps mobile chat controls available as a collapsed floating menu', async () => {
+    render(
+      <ChatPage
+        slug="shouyi-tcm-dual-ai"
+        user={{ id: 'user-1', username: 'tester', role: 'user' }}
+        account={{ gift_tokens: 100, recharge_tokens: 50, daily_gift_amount: 10, gift_tokens_max: 200, last_gift_date: null }}
+        onBack={() => {}}
+        onLogout={() => {}}
+      />
+    );
+
+    await waitFor(() => { expect(screen.getByRole('button', { name: /历史会话/ })).toBeInTheDocument(); });
+    const menu = screen.getByRole('button', { name: '展开会话操作' });
+    expect(menu).toHaveAttribute('aria-expanded', 'false');
+    fireEvent.click(menu);
+    expect(menu).toHaveAttribute('aria-expanded', 'true');
+    expect(screen.getByRole('button', { name: '移动端新建对话' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: '移动端历史会话' })).toBeInTheDocument();
+  });
 });

@@ -189,9 +189,11 @@ async function copyMessageText(text: string): Promise<void> {
 
 async function api<T>(path: string, options: RequestInit = {}): Promise<T> {
   const token = localStorage.getItem(TOKEN_KEY);
-  const baseHeaders: Record<string, string> = {
-    'Content-Type': 'application/json',
-  };
+  const baseHeaders: Record<string, string> = {};
+
+  if (options.body !== undefined && options.body !== null && !(options.body instanceof FormData)) {
+    baseHeaders['Content-Type'] = 'application/json';
+  }
 
   if (options.headers) {
     const extraHeaders = options.headers as Record<string, string>;
@@ -209,7 +211,17 @@ async function api<T>(path: string, options: RequestInit = {}): Promise<T> {
     headers: baseHeaders,
   });
 
-  const data = (await response.json()) as T & { error?: string };
+  const responseText = await response.text();
+  let data = {} as T & { error?: string };
+  if (responseText) {
+    try {
+      data = JSON.parse(responseText) as T & { error?: string };
+    } catch {
+      if (!response.ok) {
+        throw new Error(`请求失败（${String(response.status)}）`);
+      }
+    }
+  }
   if (!response.ok) {
     throw new Error(data.error ?? '请求失败');
   }
@@ -740,6 +752,7 @@ export function ChatPage({
   const [pendingInputs, setPendingInputs] = useState<Record<string, unknown> | undefined>(undefined);
   const [inputFormLoadError, setInputFormLoadError] = useState('');
   const [drawerOpen, setDrawerOpen] = useState(false);
+  const [mobileActionsOpen, setMobileActionsOpen] = useState(false);
   const [pendingImage, setPendingImage] = useState<
     | {
         file: File;
@@ -852,6 +865,8 @@ export function ChatPage({
     setMessages([]);
     setPendingInputs({});
     setInputFormLoadError('');
+    setDrawerOpen(false);
+    setMobileActionsOpen(false);
 
     if (bootstrap?.app.requires_new_conversation_inputs) {
       const formFields = bootstrap.user_input_form ?? [];
@@ -1135,7 +1150,7 @@ export function ChatPage({
           <span>{bootstrap?.app.name || slug}</span>
         </div>
         <div className="chat-actions">
-          <button className="secondary" onClick={startNewConversation} disabled={loading}>
+          <button className="secondary header-new-conversation" onClick={startNewConversation} disabled={loading}>
             新建对话
           </button>
           <button onClick={onLogout}>退出登录</button>
@@ -1194,6 +1209,44 @@ export function ChatPage({
           aria-hidden="true"
         />
       )}
+
+      <div className="mobile-chat-fab">
+        {mobileActionsOpen && (
+          <div className="mobile-chat-fab-actions">
+            <button
+              type="button"
+              className="secondary"
+              onClick={startNewConversation}
+              disabled={loading}
+              aria-label="移动端新建对话"
+            >
+              新建对话
+            </button>
+            <button
+              type="button"
+              className="secondary"
+              onClick={() => {
+                setDrawerOpen(true);
+                setMobileActionsOpen(false);
+              }}
+              aria-label="移动端历史会话"
+            >
+              历史会话（{conversations.length}）
+            </button>
+          </div>
+        )}
+        <button
+          type="button"
+          className="mobile-chat-fab-toggle"
+          onClick={() => {
+            setMobileActionsOpen((open) => !open);
+          }}
+          aria-label="展开会话操作"
+          aria-expanded={mobileActionsOpen}
+        >
+          {mobileActionsOpen ? '收起' : '会话'}
+        </button>
+      </div>
 
       <main className="chat-main">
         {(error || inputFormLoadError) && (

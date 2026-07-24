@@ -456,6 +456,10 @@ button:disabled {
   display: none;
 }
 
+.mobile-chat-fab {
+  display: none;
+}
+
 .chat-sidebar-backdrop {
   display: none;
 }
@@ -1141,8 +1145,47 @@ label.checkbox input {
   }
 
   .mobile-history-toggle,
-  .drawer-close {
+  .drawer-close,
+  .header-new-conversation {
     display: inline-flex;
+  }
+
+  .mobile-history-toggle,
+  .header-new-conversation {
+    display: none;
+  }
+
+  .mobile-chat-fab {
+    display: flex;
+    position: fixed;
+    right: 0.85rem;
+    bottom: calc(4.75rem + env(safe-area-inset-bottom));
+    z-index: 50;
+    flex-direction: column;
+    align-items: flex-end;
+    gap: 0.5rem;
+  }
+
+  .mobile-chat-fab-actions {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-end;
+    gap: 0.45rem;
+  }
+
+  .mobile-chat-fab button {
+    min-height: 2.6rem;
+    padding: 0.55rem 0.85rem;
+    border-radius: 999px;
+    box-shadow: 0 4px 14px rgba(15, 23, 42, 0.18);
+    white-space: nowrap;
+  }
+
+  .mobile-chat-fab-toggle {
+    border: 0;
+    background: #1976d2;
+    color: white;
+    font-weight: 600;
   }
 
   .chat-sidebar li .delete-conversation {

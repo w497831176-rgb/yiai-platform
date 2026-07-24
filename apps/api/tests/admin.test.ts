@@ -590,6 +590,24 @@ describe('Admin Routes', () => {
     expect(response.statusCode).toBe(400);
   });
 
+  it('allows an admin to delete an application', async () => {
+    const app = await buildApp(pool);
+    await createTestUser(pool, 'admin_user', 'admin', 'testpass');
+    const appId = await createTestApp(pool, { slug: 'delete-me', name: 'Delete Me' });
+    const token = await login(app, 'admin_user', 'testpass');
+
+    const response = await app.inject({
+      method: 'DELETE',
+      url: `/api/admin/apps/${appId}`,
+      headers: { Authorization: `Bearer ${token}` },
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(JSON.parse(response.body)).toMatchObject({ id: appId, slug: 'delete-me', deleted: true });
+    const remaining = await pool.query('SELECT id FROM yiai_apps WHERE id = $1', [appId]);
+    expect(remaining.rowCount).toBe(0);
+  });
+
   it('prevents non-admin users from accessing admin endpoints', async () => {
     const app = await buildApp(pool);
     const userId = await createTestUser(pool, 'normal_user');
