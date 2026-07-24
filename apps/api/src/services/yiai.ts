@@ -431,10 +431,15 @@ export async function listConversations(
   const url = `${baseUrl}/conversations?user=${encodeURIComponent(upstreamUserId)}&limit=20&sort_by=-updated_at`;
 
   const response = await yiaiGet<YiaiApiResponse<YiaiConversation>>(url, app.api_key);
-  return response.data ?? [];
+  const hiddenResult = await pool.query<{ conversation_id: string }>(
+    'SELECT conversation_id FROM hidden_conversations WHERE user_id = $1 AND app_id = $2',
+    [userId, app.id]
+  );
+  const hiddenConversationIds = new Set(hiddenResult.rows.map((row) => row.conversation_id));
+  return (response.data ?? []).filter((conversation) => !hiddenConversationIds.has(conversation.id));
 }
 
-export async function deleteConversation(
+export async function hideConversation(
   pool: Pool,
   slug: string,
   userId: string,
@@ -445,25 +450,13 @@ export async function deleteConversation(
     throw new YiaiAppNotFoundError(slug);
   }
 
-  const baseUrl = app.api_base_url.replace(/\/$/, '');
-  const upstreamUserId = getUpstreamUserId(userId);
-  const url = `${baseUrl}/conversations/${encodeURIComponent(conversationId)}?user=${encodeURIComponent(upstreamUserId)}`;
-
-  let response: Response;
-  try {
-    response = await fetch(url, {
-      method: 'DELETE',
-      headers: {
-        Authorization: `Bearer ${app.api_key}`,
-      },
-    });
-  } catch (err) {
-    throw new YiaiUpstreamError(`删除会话失败：${err instanceof Error ? err.message : '未知错误'}`);
-  }
-
-  if (!response.ok) {
-    throw new YiaiUpstreamError(`删除会话失败：上游返回 ${String(response.status)} ${response.statusText}`);
-  }
+  await pool.query(
+    `INSERT INTO hidden_conversations (user_id, app_id, conversation_id)
+     VALUES ($1, $2, $3)
+     ON CONFLICT (user_id, app_id, conversation_id)
+     DO UPDATE SET hidden_at = EXCLUDED.hidden_at`,
+    [userId, app.id, conversationId]
+  );
 }
 
 export async function listMessages(

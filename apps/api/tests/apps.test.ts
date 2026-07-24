@@ -696,9 +696,7 @@ describe('App Routes', () => {
     expect((init as { headers: Record<string, string> }).headers.Authorization).toBe('Bearer test-key');
   });
 
-  it('deletes conversation by forwarding DELETE to upstream', async () => {
-    fetchMock.mockResolvedValueOnce(new Response(null, { status: 204 }));
-
+  it('hides a conversation locally without calling YIAI deletion APIs', async () => {
     const app = await buildTestApp(pool);
     const token = await loginUser(app, 'test_user', 'testpass');
 
@@ -709,14 +707,12 @@ describe('App Routes', () => {
     });
 
     expect(response.statusCode).toBe(204);
-    expect(fetchMock).toHaveBeenCalledTimes(1);
-    const [url, init] = fetchMock.mock.calls[0];
-    expect(url).toMatch(/^https:\/\/yiai\.example\.com\/v1\/conversations\/conv-1\?user=yiai-platform-[\w-]+$/);
-    expect((init as { method: string }).method).toBe('DELETE');
-    expect((init as { headers: Record<string, string> }).headers.Authorization).toBe('Bearer test-key');
+    expect(fetchMock).not.toHaveBeenCalled();
+    const hidden = await pool.query<{ conversation_id: string }>('SELECT conversation_id FROM hidden_conversations');
+    expect(hidden.rows).toEqual([{ conversation_id: 'conv-1' }]);
   });
 
-  it('rejects deleting conversation belonging to another user', async () => {
+  it('hides another user\'s local conversation view without forwarding to YIAI', async () => {
     const app = await buildTestApp(pool);
     const otherUserId = await createTestUser(pool, 'other_user', 'user', 'testpass');
 
@@ -736,7 +732,9 @@ describe('App Routes', () => {
       headers: { Authorization: `Bearer ${otherToken}` },
     });
 
-    expect(response.statusCode).toBe(502);
+    expect(response.statusCode).toBe(204);
+    expect(fetchMock).not.toHaveBeenCalled();
+    if (response.statusCode !== 204) {
     const result = JSON.parse(response.body) as { error: string };
     expect(result.error).toContain('删除会话失败');
 
@@ -748,5 +746,44 @@ describe('App Routes', () => {
     expect(forwardedCalls).toHaveLength(1);
     const otherUserUrl = `yiai-platform-${otherUserId}`;
     expect((forwardedCalls[0][0] as string).includes(otherUserUrl)).toBe(true);
+    }
+  });
+
+  it('filters hidden conversations only for the current platform user', async () => {
+    const app = await buildTestApp(pool);
+    await createTestUser(pool, 'list_other_user', 'user', 'testpass');
+    const token = await loginUser(app, 'test_user', 'testpass');
+    const otherToken = await loginUser(app, 'list_other_user', 'testpass');
+
+    const hideResponse = await app.inject({
+      method: 'DELETE',
+      url: '/api/apps/zhouyi-divination/conversations/conv-shared',
+      headers: { Authorization: `Bearer ${token}` },
+    });
+    expect(hideResponse.statusCode).toBe(204);
+
+    const upstreamConversations = {
+      data: [
+        { id: 'conv-shared', name: 'Shared', inputs: {}, status: 'normal', updated_at: 200, created_at: 200 },
+        { id: 'conv-visible', name: 'Visible', inputs: {}, status: 'normal', updated_at: 100, created_at: 100 },
+      ],
+    };
+    fetchMock.mockResolvedValueOnce(new Response(JSON.stringify(upstreamConversations)));
+    const ownListResponse = await app.inject({
+      method: 'GET',
+      url: '/api/apps/zhouyi-divination/conversations',
+      headers: { Authorization: `Bearer ${token}` },
+    });
+    expect(ownListResponse.statusCode).toBe(200);
+    expect((JSON.parse(ownListResponse.body) as YiaiConversation[]).map((item) => item.id)).toEqual(['conv-visible']);
+
+    fetchMock.mockResolvedValueOnce(new Response(JSON.stringify(upstreamConversations)));
+    const otherListResponse = await app.inject({
+      method: 'GET',
+      url: '/api/apps/zhouyi-divination/conversations',
+      headers: { Authorization: `Bearer ${otherToken}` },
+    });
+    expect(otherListResponse.statusCode).toBe(200);
+    expect((JSON.parse(otherListResponse.body) as YiaiConversation[]).map((item) => item.id)).toEqual(['conv-shared', 'conv-visible']);
   });
 });

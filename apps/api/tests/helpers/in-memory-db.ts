@@ -39,6 +39,7 @@ export async function createInMemoryPool(): Promise<Pool> {
     '006_allow_negative_gift_tokens.sql',
     '007_add_yiai_app_tags_and_icon_source.sql',
     '008_add_yiai_app_types.sql',
+    '009_create_hidden_conversations.sql',
   ];
 
   for (const file of files) {

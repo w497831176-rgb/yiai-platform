@@ -9,7 +9,7 @@ import {
   listConversations,
   listMessages,
   chatUpstream,
-  deleteConversation,
+  hideConversation,
   uploadFileToUpstream,
   recordUsage,
   YiaiAppNotFoundError,
@@ -117,7 +117,7 @@ export function appRoutes(fastify: FastifyInstance, options: { pool: Pool }): vo
     }
 
     try {
-      await deleteConversation(pool, slug, userId, conversationId);
+      await hideConversation(pool, slug, userId, conversationId);
       return await reply.status(204).send();
     } catch (err) {
       if (err instanceof YiaiAppNotFoundError) {
