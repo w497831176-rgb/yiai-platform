@@ -820,34 +820,53 @@ export function ChatPage({
   const initialize = useCallback(async () => {
     setLoading(true);
     setError('');
+    setMessages([]);
+    setActiveConversationId(undefined);
+    setPendingInputs({});
+    setInputFormLoadError('');
     try {
-      const [bs, list] = await Promise.all([
-        api<AppBootstrap>(`/apps/${slug}/bootstrap`),
-        api<YiaiConversation[]>(`/apps/${slug}/conversations`),
-      ]);
+      const bs = await api<AppBootstrap>(`/apps/${slug}/bootstrap`);
       setBootstrap(bs);
-      setConversations(list);
 
-      if (list.length > 0) {
-        const latest = list[0];
-        setActiveConversationId(latest.id);
-        setPendingInputs(latest.inputs);
-        setInputFormLoadError('');
-        await loadMessages(latest.id);
-      } else if (bs.app.requires_new_conversation_inputs) {
-        const formFields = bs.user_input_form ?? [];
-        if (formFields.length === 0) {
-          setInputFormLoadError('用户信息表单加载失败，请重试');
-          setShowInputForm(false);
+      try {
+        const list = await api<YiaiConversation[]>(`/apps/${slug}/conversations`);
+        setConversations(list);
+
+        if (list.length > 0) {
+          const latest = list[0];
+          setActiveConversationId(latest.id);
+          setPendingInputs(latest.inputs);
+          await loadMessages(latest.id);
+        } else if (bs.app.requires_new_conversation_inputs) {
+          const formFields = bs.user_input_form ?? [];
+          if (formFields.length === 0) {
+            setInputFormLoadError('用户信息表单加载失败，请重试');
+            setShowInputForm(false);
+          } else {
+            setShowInputForm(true);
+          }
         } else {
-          setInputFormLoadError('');
-          setShowInputForm(true);
+          setShowInputForm(false);
         }
-      } else {
-        setMessages([]);
-        setActiveConversationId(undefined);
-        setPendingInputs({});
-        setInputFormLoadError('');
+      } catch (err) {
+        setConversations([]);
+        setError(
+          err instanceof Error
+            ? `历史会话加载失败，已切换为新对话：${err.message}`
+            : '历史会话加载失败，已切换为新对话'
+        );
+
+        if (bs.app.requires_new_conversation_inputs) {
+          const formFields = bs.user_input_form ?? [];
+          if (formFields.length === 0) {
+            setInputFormLoadError('用户信息表单加载失败，请重试');
+            setShowInputForm(false);
+          } else {
+            setShowInputForm(true);
+          }
+        } else {
+          setShowInputForm(false);
+        }
       }
     } catch (err) {
       setError(err instanceof Error ? err.message : '加载应用失败');
@@ -861,6 +880,7 @@ export function ChatPage({
   }, [initialize]);
 
   const startNewConversation = () => {
+    setError('');
     setActiveConversationId(undefined);
     setMessages([]);
     setPendingInputs({});

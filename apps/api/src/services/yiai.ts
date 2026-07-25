@@ -389,7 +389,16 @@ export async function bootstrapApp(pool: Pool, slug: string): Promise<AppBootstr
   }
 
   const baseUrl = app.api_base_url.replace(/\/$/, '');
-  const parameters = await yiaiGet<YiaiParametersResponse>(`${baseUrl}/parameters`, app.api_key);
+  let parameters: YiaiParametersResponse = {};
+  try {
+    parameters = await yiaiGet<YiaiParametersResponse>(`${baseUrl}/parameters`, app.api_key);
+  } catch (err) {
+    // Application identity and Agent form settings are local platform data.
+    // A transient upstream failure must not make the entire chat page unusable.
+    if (!(err instanceof YiaiUpstreamError)) {
+      throw err;
+    }
+  }
   const iconType = app.icon_type ?? inferIconType(app.icon);
   const agentInputForm = app.app_type === 'agent' ? normalizeUserInputForm(app.agent_input_form) : null;
 
@@ -530,15 +539,19 @@ export async function chatUpstream(
     upstreamBody.files = request.files;
   }
 
-  return fetch(`${baseUrl}/chat-messages`, {
-    method: 'POST',
-    headers: {
-      Authorization: `Bearer ${app.api_key}`,
-      'Content-Type': 'application/json',
-      Accept: 'text/event-stream',
-    },
-    body: JSON.stringify(upstreamBody),
-  });
+  try {
+    return await fetch(`${baseUrl}/chat-messages`, {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${app.api_key}`,
+        'Content-Type': 'application/json',
+        Accept: 'text/event-stream',
+      },
+      body: JSON.stringify(upstreamBody),
+    });
+  } catch (err) {
+    throw new YiaiUpstreamError(`YIAI 接口请求失败: ${err instanceof Error ? err.message : '未知错误'}`);
+  }
 }
 
 export async function uploadFileToUpstream(

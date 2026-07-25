@@ -220,6 +220,24 @@ describe('App Routes', () => {
     expect(url).toBe('https://yiai.example.com/v1/parameters');
   });
 
+  it('returns a local bootstrap shell when upstream parameters are temporarily unavailable', async () => {
+    fetchMock.mockRejectedValueOnce(new Error('fetch failed'));
+    const app = await buildTestApp(pool);
+    const token = await loginUser(app, 'test_user', 'testpass');
+
+    const response = await app.inject({
+      method: 'GET',
+      url: '/api/apps/zhouyi-divination/bootstrap',
+      headers: { Authorization: `Bearer ${token}` },
+    });
+
+    expect(response.statusCode).toBe(200);
+    const body = JSON.parse(response.body) as AppBootstrap;
+    expect(body.app.slug).toBe('zhouyi-divination');
+    expect(body.opening_statement).toBeNull();
+    expect(body.suggested_questions).toBeNull();
+  });
+
   it('uses the platform Agent form when upstream parameters have no form', async () => {
     await createTestApp(pool, {
       slug: 'agent-charting',

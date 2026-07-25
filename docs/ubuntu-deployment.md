@@ -19,7 +19,7 @@ Persistent and secret material is deliberately outside the release directory:
 
 `compose.ubuntu.yml` is the only Compose file used by the Ubuntu runtime. The database is loopback-only on port `5432`; the API is loopback-only on port `3000`; the web reverse proxy listens on `192.168.50.112:18114`.
 
-The API and web containers use host networking on Ubuntu. This is intentional: the existing Mihomo/TUN configuration provides the working outbound path to YIAI. No Mihomo configuration, DNS, route, forwarding rule, or existing proxy port is modified by this deployment.
+The API and web containers use host networking on Ubuntu. The API process uses Node's built-in environment-proxy support with the existing loopback-only Mihomo HTTP proxy (`127.0.0.1:7890`) for YIAI requests. This is necessary because Fake-IP DNS addresses cannot be connected to directly. No Mihomo configuration, DNS, route, forwarding rule, or existing proxy port is modified by this deployment.
 
 ## Start and inspect
 

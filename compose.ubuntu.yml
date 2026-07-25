@@ -52,8 +52,15 @@ services:
     restart: unless-stopped
     environment:
       NODE_ENV: production
+      # The host runs Mihomo in Fake-IP mode. Node must use its local HTTP
+      # proxy for upstream YIAI requests instead of connecting to Fake-IP
+      # addresses directly.
+      NODE_OPTIONS: --use-env-proxy
+      HTTP_PROXY: http://127.0.0.1:7890
+      HTTPS_PROXY: http://127.0.0.1:7890
+      NO_PROXY: 127.0.0.1,localhost
       YIAI_PLATFORM_API_PORT: 3000
-      # Host networking lets this service use the existing Mihomo/TUN egress
+      # Host networking makes the existing loopback-only proxy available
       # without changing the machine's proxy, routing, or firewall rules.
       YIAI_PLATFORM_API_HOST: 127.0.0.1
       YIAI_PLATFORM_DB_HOST: 127.0.0.1

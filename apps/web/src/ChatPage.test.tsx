@@ -272,4 +272,44 @@ describe('ChatPage latest conversation inputs restore', () => {
     expect(screen.getByRole('button', { name: '移动端新建对话' })).toBeInTheDocument();
     expect(screen.getByRole('button', { name: '移动端历史会话' })).toBeInTheDocument();
   });
+
+  it('keeps a new chat usable when loading conversation history fails', async () => {
+    fetchMock.mockImplementation((input) => {
+      const url = typeof input === 'string' ? input : input.url;
+      if (url.endsWith('/bootstrap')) {
+        return Promise.resolve(new Response(JSON.stringify({
+          app: { id: 'recover-app', slug: 'recover-app', name: 'Recover App', description: null, icon: null, sort_order: 1, requires_new_conversation_inputs: false, created_at: '', updated_at: '' },
+          opening_statement: null, suggested_questions: [], user_input_form: null,
+        })));
+      }
+      if (url.endsWith('/conversations')) {
+        return Promise.resolve(new Response(JSON.stringify({ error: '上游暂时不可用' }), { status: 502 }));
+      }
+      if (url.endsWith('/chat')) {
+        return Promise.resolve(new Response(new ReadableStream({ start(controller) { controller.close(); } }), { status: 200 }));
+      }
+      return Promise.reject(new Error(`Unexpected fetch: ${url}`));
+    });
+
+    render(
+      <ChatPage
+        slug="recover-app"
+        user={{ id: 'user-1', username: 'tester', role: 'user' }}
+        account={{ gift_tokens: 100, recharge_tokens: 50, daily_gift_amount: 10, gift_tokens_max: 200, last_gift_date: null }}
+        onBack={() => {}}
+        onLogout={() => {}}
+      />
+    );
+
+    await waitFor(() => {
+      expect(screen.getByText(/历史会话加载失败，已切换为新对话/)).toBeInTheDocument();
+    });
+    const input = screen.getByPlaceholderText('输入问题...');
+    expect(input).not.toBeDisabled();
+    fireEvent.change(input, { target: { value: '重新开始' } });
+    fireEvent.click(screen.getByRole('button', { name: '发送' }));
+    await waitFor(() => {
+      expect(fetchMock.mock.calls.some(([url]) => (typeof url === 'string' ? url : url.url).endsWith('/chat'))).toBe(true);
+    });
+  });
 });
