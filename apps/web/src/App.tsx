@@ -89,6 +89,7 @@ interface ChatMessage {
   role: 'user' | 'assistant';
   content: string;
   rawContent?: string;
+  isPending?: boolean;
   files?: YiaiMessageFile[];
   usage?: number;
   createdAt?: number;
@@ -764,6 +765,7 @@ export function ChatPage({
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const abortControllerRef = useRef<AbortController | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const chatInputRef = useRef<HTMLTextAreaElement>(null);
 
   const scrollToBottom = () => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
@@ -783,6 +785,16 @@ export function ChatPage({
   useEffect(() => {
     scrollToBottom();
   }, [messages]);
+
+  useEffect(() => {
+    const textarea = chatInputRef.current;
+    if (!textarea) {
+      return;
+    }
+
+    textarea.style.height = 'auto';
+    textarea.style.height = `${String(textarea.scrollHeight)}px`;
+  }, [input]);
 
   const loadConversations = async () => {
     try {
@@ -1019,7 +1031,7 @@ export function ChatPage({
       content: text,
       files: userFiles,
     };
-    const assistantMessage: ChatMessage = { role: 'assistant', content: '', rawContent: '' };
+    const assistantMessage: ChatMessage = { role: 'assistant', content: '', rawContent: '', isPending: true };
     setMessages((prev) => [...prev, userMessage, assistantMessage]);
 
     const token = localStorage.getItem(TOKEN_KEY);
@@ -1064,6 +1076,7 @@ export function ChatPage({
                   ...last,
                   rawContent,
                   content: stripThinkContent(rawContent),
+                  isPending: false,
                 };
               }
               return next;
@@ -1079,6 +1092,7 @@ export function ChatPage({
                   ...last,
                   rawContent: answer,
                   content: stripThinkContent(answer),
+                  isPending: false,
                 };
               }
               return next;
@@ -1094,7 +1108,7 @@ export function ChatPage({
               const next = [...prev];
               const last = next[next.length - 1];
               if (last.role === 'assistant') {
-                next[next.length - 1] = { ...last, files: [...(last.files ?? []), { type, url }] };
+                next[next.length - 1] = { ...last, isPending: false, files: [...(last.files ?? []), { type, url }] };
               }
               return next;
             });
@@ -1118,6 +1132,7 @@ export function ChatPage({
                   id: typeof data.message_id === 'string' ? data.message_id : last.id,
                   usage: typeof totalTokens === 'number' ? totalTokens : last.usage,
                   createdAt: messageCreatedAt,
+                  isPending: false,
                 };
               }
               return next;
@@ -1131,9 +1146,25 @@ export function ChatPage({
             const message = typeof data.message === 'string' ? data.message : '聊天服务返回错误';
             setError(message);
             setLoading(false);
+            setMessages((prev) => {
+              const next = [...prev];
+              const last = next[next.length - 1];
+              if (last.role === 'assistant' && last.isPending) {
+                next[next.length - 1] = { ...last, isPending: false };
+              }
+              return next;
+            });
           },
           onComplete: () => {
             setLoading(false);
+            setMessages((prev) => {
+              const next = [...prev];
+              const last = next[next.length - 1];
+              if (last.role === 'assistant' && last.isPending) {
+                next[next.length - 1] = { ...last, isPending: false };
+              }
+              return next;
+            });
           },
         },
         abortControllerRef.current.signal
@@ -1141,7 +1172,39 @@ export function ChatPage({
     } catch (err) {
       setError(err instanceof Error ? err.message : '发送失败');
       setLoading(false);
+      setMessages((prev) => {
+        const next = [...prev];
+        const last = next[next.length - 1];
+        if (last.role === 'assistant' && last.isPending) {
+          next[next.length - 1] = { ...last, isPending: false };
+        }
+        return next;
+      });
     }
+  };
+
+  const sendCurrentInput = () => {
+    if (loading || !!inputFormLoadError || isBalanceInsufficient || (!input.trim() && !pendingImage?.uploaded)) {
+      return;
+    }
+    void handleSend(input);
+    setInput('');
+    clearPendingImage();
+  };
+
+  const insertInputNewline = () => {
+    const textarea = chatInputRef.current;
+    if (!textarea || textarea.disabled) {
+      return;
+    }
+    const start = textarea.selectionStart;
+    const end = textarea.selectionEnd;
+    const nextValue = `${input.slice(0, start)}\n${input.slice(end)}`;
+    setInput(nextValue);
+    requestAnimationFrame(() => {
+      textarea.focus();
+      textarea.setSelectionRange(start + 1, start + 1);
+    });
   };
 
   const handleSuggestedQuestion = (question: string) => {
@@ -1294,7 +1357,14 @@ export function ChatPage({
             <div key={idx} className={`message ${msg.role}`}>
               <div className="message-content">
                 <div className="bubble">
-                  {msg.role === 'assistant' ? <MarkdownMessage content={msg.content} /> : msg.content}
+                  {msg.role === 'assistant' && msg.isPending ? (
+                    <span className="replying-indicator" role="status" aria-label="AI 回复中">
+                      <span>回复中</span>
+                      <span className="replying-dot" aria-hidden="true">.</span>
+                      <span className="replying-dot" aria-hidden="true">.</span>
+                      <span className="replying-dot" aria-hidden="true">.</span>
+                    </span>
+                  ) : msg.role === 'assistant' ? <MarkdownMessage content={msg.content} /> : msg.content}
                   {msg.files && msg.files.length > 0 && (
                     <div className="message-files">
                       {msg.files.map((file, fidx) => (
@@ -1307,7 +1377,7 @@ export function ChatPage({
                   (msg.usage !== undefined || normalizeYiaiTimestamp(msg.createdAt) !== null) && (
                     <div className="message-meta">{formatMessageMeta(msg)}</div>
                   )}
-                <div className="message-actions">
+                {!msg.isPending && <div className="message-actions">
                   <button
                     type="button"
                     className="copy-message"
@@ -1316,7 +1386,7 @@ export function ChatPage({
                   >
                     {copiedMessageIndex === idx ? '已复制' : '复制'}
                   </button>
-                </div>
+                </div>}
               </div>
             </div>
           ))}
@@ -1342,19 +1412,27 @@ export function ChatPage({
             className="input-bar"
             onSubmit={(e) => {
               e.preventDefault();
-              void handleSend(input);
-              setInput('');
-              clearPendingImage();
+              insertInputNewline();
             }}
           >
-            <input
-              type="text"
+            <textarea
+              ref={chatInputRef}
+              className="chat-input"
+              rows={8}
               value={input}
               onChange={(e) => {
                 setInput(e.target.value);
               }}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter' && !e.nativeEvent.isComposing) {
+                  e.preventDefault();
+                  insertInputNewline();
+                }
+              }}
               placeholder={isBalanceInsufficient ? '余额不足，请等待每日赠送或联系管理员充值' : '输入问题...'}
               disabled={loading || !!inputFormLoadError || (pendingImage !== null && !pendingImage.uploaded)}
+              enterKeyHint="enter"
+              aria-label="聊天输入框"
             />
             <input
               ref={fileInputRef}
@@ -1374,7 +1452,8 @@ export function ChatPage({
               图片
             </button>
             <button
-              type="submit"
+              type="button"
+              onClick={sendCurrentInput}
               disabled={
                 loading ||
                 !!inputFormLoadError ||

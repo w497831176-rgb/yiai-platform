@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { render, screen, waitFor, fireEvent } from '@testing-library/react';
+import { act, render, screen, waitFor, fireEvent } from '@testing-library/react';
 import { ChatPage } from './App';
 
 const TOKEN_KEY = 'yiai_token';
@@ -310,6 +310,99 @@ describe('ChatPage latest conversation inputs restore', () => {
     fireEvent.click(screen.getByRole('button', { name: '发送' }));
     await waitFor(() => {
       expect(fetchMock.mock.calls.some(([url]) => (typeof url === 'string' ? url : url.url).endsWith('/chat'))).toBe(true);
+    });
+  });
+
+  it('only sends when the visible send button is clicked and keeps an eight-line textarea', async () => {
+    fetchMock.mockImplementation((input) => {
+      const url = typeof input === 'string' ? input : input.url;
+      if (url.endsWith('/bootstrap')) {
+        return Promise.resolve(new Response(JSON.stringify({
+          app: { id: 'textarea-app', slug: 'textarea-app', name: 'Textarea App', description: null, icon: null, sort_order: 1, requires_new_conversation_inputs: false, created_at: '', updated_at: '' },
+          opening_statement: null, suggested_questions: [], user_input_form: null,
+        })));
+      }
+      if (url.endsWith('/conversations')) return Promise.resolve(new Response(JSON.stringify([])));
+      if (url.endsWith('/chat')) return Promise.resolve(new Response(new ReadableStream({ start(controller) { controller.close(); } }), { status: 200 }));
+      return Promise.reject(new Error(`Unexpected fetch: ${url}`));
+    });
+
+    render(
+      <ChatPage
+        slug="textarea-app"
+        user={{ id: 'user-1', username: 'tester', role: 'user' }}
+        account={{ gift_tokens: 100, recharge_tokens: 50, daily_gift_amount: 10, gift_tokens_max: 200, last_gift_date: null }}
+        onBack={() => {}}
+        onLogout={() => {}}
+      />
+    );
+
+    const input = await screen.findByPlaceholderText('输入问题...');
+    expect(input.tagName).toBe('TEXTAREA');
+    expect(input).toHaveAttribute('rows', '8');
+    fireEvent.change(input, { target: { value: '保留在输入框里的内容' } });
+    fireEvent.keyDown(input, { key: 'Enter' });
+    await waitFor(() => { expect(input).toHaveValue('保留在输入框里的内容\n'); });
+    fireEvent.change(input, { target: { value: '输入法发送键也只能换行' } });
+    const form = input.closest('form');
+    if (!form) {
+      throw new Error('chat input form is missing');
+    }
+    fireEvent.submit(form);
+    await waitFor(() => { expect(input).toHaveValue('输入法发送键也只能换行\n'); });
+    expect(fetchMock.mock.calls.some(([url]) => (typeof url === 'string' ? url : url.url).endsWith('/chat'))).toBe(false);
+
+    fireEvent.click(screen.getByRole('button', { name: '发送' }));
+    await waitFor(() => {
+      expect(fetchMock.mock.calls.some(([url]) => (typeof url === 'string' ? url : url.url).endsWith('/chat'))).toBe(true);
+    });
+  });
+
+  it('shows a replying indicator until the first stream text arrives', async () => {
+    let streamController: ReadableStreamDefaultController<Uint8Array> | undefined;
+    fetchMock.mockImplementation((input) => {
+      const url = typeof input === 'string' ? input : input.url;
+      if (url.endsWith('/bootstrap')) {
+        return Promise.resolve(new Response(JSON.stringify({
+          app: { id: 'replying-app', slug: 'replying-app', name: 'Replying App', description: null, icon: null, sort_order: 1, requires_new_conversation_inputs: false, created_at: '', updated_at: '' },
+          opening_statement: null, suggested_questions: [], user_input_form: null,
+        })));
+      }
+      if (url.endsWith('/conversations')) return Promise.resolve(new Response(JSON.stringify([])));
+      if (url.endsWith('/chat')) {
+        return Promise.resolve(new Response(new ReadableStream({
+          start(controller) {
+            streamController = controller;
+          },
+        }), { status: 200 }));
+      }
+      return Promise.reject(new Error(`Unexpected fetch: ${url}`));
+    });
+
+    render(
+      <ChatPage
+        slug="replying-app"
+        user={{ id: 'user-1', username: 'tester', role: 'user' }}
+        account={{ gift_tokens: 100, recharge_tokens: 50, daily_gift_amount: 10, gift_tokens_max: 200, last_gift_date: null }}
+        onBack={() => {}}
+        onLogout={() => {}}
+      />
+    );
+
+    const input = await screen.findByPlaceholderText('输入问题...');
+    fireEvent.change(input, { target: { value: '请开始回答' } });
+    fireEvent.click(screen.getByRole('button', { name: '发送' }));
+
+    expect(await screen.findByRole('status', { name: 'AI 回复中' })).toBeInTheDocument();
+    act(() => {
+      streamController?.enqueue(new TextEncoder().encode('data: {"event":"message","answer":"已收到"}\n\n'));
+    });
+    await waitFor(() => {
+      expect(screen.getByText('已收到')).toBeInTheDocument();
+      expect(screen.queryByRole('status', { name: 'AI 回复中' })).not.toBeInTheDocument();
+    });
+    act(() => {
+      streamController?.close();
     });
   });
 });

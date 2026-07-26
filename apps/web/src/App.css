@@ -579,6 +579,39 @@ button:disabled {
   border-bottom-left-radius: 4px;
 }
 
+.replying-indicator {
+  display: inline-flex;
+  align-items: baseline;
+  color: #64748b;
+  font-style: italic;
+}
+
+.replying-dot {
+  display: inline-block;
+  width: 0.22em;
+  animation: replying-dot-pulse 1.15s ease-in-out infinite;
+}
+
+.replying-dot:nth-child(3) {
+  animation-delay: 0.15s;
+}
+
+.replying-dot:nth-child(4) {
+  animation-delay: 0.3s;
+}
+
+@keyframes replying-dot-pulse {
+  0%, 80%, 100% {
+    opacity: 0.2;
+    transform: translateY(0);
+  }
+
+  40% {
+    opacity: 1;
+    transform: translateY(-0.15em);
+  }
+}
+
 .markdown-content {
   overflow-wrap: anywhere;
   word-break: break-word;
@@ -701,18 +734,26 @@ button:disabled {
 
 .input-bar {
   display: flex;
+  align-items: flex-end;
   gap: 0.5rem;
   padding: 0.75rem 1rem;
   background: white;
   border-top: 1px solid #e0e0e0;
 }
 
-.input-bar input {
+.chat-input {
   flex: 1;
+  min-width: 0;
+  min-height: calc(12em + 1.25rem);
+  max-height: min(40vh, 22rem);
   padding: 0.625rem 0.875rem;
   border: 1px solid #ddd;
   border-radius: 8px;
   font-size: 0.9375rem;
+  line-height: 1.5;
+  resize: none;
+  overflow-y: auto;
+  font-family: inherit;
 }
 
 .input-bar button {
