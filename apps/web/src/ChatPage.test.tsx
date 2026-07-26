@@ -313,7 +313,7 @@ describe('ChatPage latest conversation inputs restore', () => {
     });
   });
 
-  it('only sends when the visible send button is clicked and keeps an eight-line textarea', async () => {
+  it('only sends when the visible send button is clicked and keeps a one-line textarea', async () => {
     fetchMock.mockImplementation((input) => {
       const url = typeof input === 'string' ? input : input.url;
       if (url.endsWith('/bootstrap')) {
@@ -339,7 +339,7 @@ describe('ChatPage latest conversation inputs restore', () => {
 
     const input = await screen.findByPlaceholderText('输入问题...');
     expect(input.tagName).toBe('TEXTAREA');
-    expect(input).toHaveAttribute('rows', '8');
+    expect(input).toHaveAttribute('rows', '1');
     fireEvent.change(input, { target: { value: '保留在输入框里的内容' } });
     fireEvent.keyDown(input, { key: 'Enter' });
     await waitFor(() => { expect(input).toHaveValue('保留在输入框里的内容\n'); });

@@ -1418,7 +1418,7 @@ export function ChatPage({
             <textarea
               ref={chatInputRef}
               className="chat-input"
-              rows={8}
+              rows={1}
               value={input}
               onChange={(e) => {
                 setInput(e.target.value);
