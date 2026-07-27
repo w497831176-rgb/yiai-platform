@@ -92,6 +92,7 @@ describe('App Routes', () => {
       { method: 'GET' as const, url: '/api/apps/zhouyi-divination/bootstrap' },
       { method: 'GET' as const, url: '/api/apps/zhouyi-divination/conversations' },
       { method: 'DELETE' as const, url: '/api/apps/zhouyi-divination/conversations/conv-1' },
+      { method: 'PATCH' as const, url: '/api/apps/zhouyi-divination/conversations/conv-1', payload: { name: '重命名会话' } },
       { method: 'GET' as const, url: '/api/apps/zhouyi-divination/conversations/conv-1/messages' },
       { method: 'POST' as const, url: '/api/apps/zhouyi-divination/files' },
       { method: 'POST' as const, url: '/api/apps/zhouyi-divination/chat', payload: { query: 'hi' } },
@@ -288,6 +289,53 @@ describe('App Routes', () => {
     const body = JSON.parse(response.body) as YiaiConversation[];
     expect(body[0].id).toBe('conv-2');
     expect(body[1].id).toBe('conv-1');
+  });
+
+  it('renames a conversation only in the platform and returns the local display name', async () => {
+    const upstreamConversations = {
+      data: [{ id: 'conv-1', name: '上游原始名称', inputs: {}, status: 'normal', updated_at: 100, created_at: 100 }],
+    };
+    fetchMock.mockResolvedValueOnce(new Response(JSON.stringify(upstreamConversations)));
+
+    const app = await buildTestApp(pool);
+    const token = await loginUser(app, 'test_user', 'testpass');
+    const renameResponse = await app.inject({
+      method: 'PATCH',
+      url: '/api/apps/zhouyi-divination/conversations/conv-1',
+      headers: { Authorization: `Bearer ${token}` },
+      payload: { name: '我的占卦问题' },
+    });
+
+    expect(renameResponse.statusCode).toBe(200);
+    expect(JSON.parse(renameResponse.body)).toEqual({ id: 'conv-1', name: '我的占卦问题' });
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+
+    fetchMock.mockResolvedValueOnce(new Response(JSON.stringify(upstreamConversations)));
+    const listResponse = await app.inject({
+      method: 'GET',
+      url: '/api/apps/zhouyi-divination/conversations',
+      headers: { Authorization: `Bearer ${token}` },
+    });
+
+    expect(listResponse.statusCode).toBe(200);
+    const conversations = JSON.parse(listResponse.body) as YiaiConversation[];
+    expect(conversations[0].name).toBe('我的占卦问题');
+    const stored = await pool.query<{ display_name: string }>('SELECT display_name FROM conversation_display_names');
+    expect(stored.rows).toEqual([{ display_name: '我的占卦问题' }]);
+  });
+
+  it('rejects an empty local conversation name without calling upstream', async () => {
+    const app = await buildTestApp(pool);
+    const token = await loginUser(app, 'test_user', 'testpass');
+    const response = await app.inject({
+      method: 'PATCH',
+      url: '/api/apps/zhouyi-divination/conversations/conv-1',
+      headers: { Authorization: `Bearer ${token}` },
+      payload: { name: '   ' },
+    });
+
+    expect(response.statusCode).toBe(400);
+    expect(fetchMock).not.toHaveBeenCalled();
   });
 
   it('returns messages in chronological order', async () => {

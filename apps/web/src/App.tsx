@@ -754,6 +754,10 @@ export function ChatPage({
   const [inputFormLoadError, setInputFormLoadError] = useState('');
   const [drawerOpen, setDrawerOpen] = useState(false);
   const [mobileActionsOpen, setMobileActionsOpen] = useState(false);
+  const [renamingConversation, setRenamingConversation] = useState<YiaiConversation | null>(null);
+  const [conversationNameDraft, setConversationNameDraft] = useState('');
+  const [renameError, setRenameError] = useState('');
+  const [renameSaving, setRenameSaving] = useState(false);
   const [pendingImage, setPendingImage] = useState<
     | {
         file: File;
@@ -762,13 +766,26 @@ export function ChatPage({
       }
     | null
   >(null);
-  const messagesEndRef = useRef<HTMLDivElement>(null);
+  const messagesRef = useRef<HTMLDivElement>(null);
+  const followLatestMessagesRef = useRef(true);
   const abortControllerRef = useRef<AbortController | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const chatInputRef = useRef<HTMLTextAreaElement>(null);
 
   const scrollToBottom = () => {
-    messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+    const messagesElement = messagesRef.current;
+    if (messagesElement) {
+      messagesElement.scrollTop = messagesElement.scrollHeight;
+    }
+  };
+
+  const handleMessagesScroll = () => {
+    const messagesElement = messagesRef.current;
+    if (!messagesElement) {
+      return;
+    }
+    followLatestMessagesRef.current =
+      messagesElement.scrollHeight - messagesElement.scrollTop - messagesElement.clientHeight < 48;
   };
 
   const handleCopyMessage = (index: number, content: string) => {
@@ -783,7 +800,13 @@ export function ChatPage({
   };
 
   useEffect(() => {
-    scrollToBottom();
+    if (!followLatestMessagesRef.current) {
+      return;
+    }
+    const frame = requestAnimationFrame(scrollToBottom);
+    return () => {
+      cancelAnimationFrame(frame);
+    };
   }, [messages]);
 
   useEffect(() => {
@@ -833,6 +856,7 @@ export function ChatPage({
     setLoading(true);
     setError('');
     setMessages([]);
+    followLatestMessagesRef.current = true;
     setActiveConversationId(undefined);
     setPendingInputs({});
     setInputFormLoadError('');
@@ -895,6 +919,7 @@ export function ChatPage({
     setError('');
     setActiveConversationId(undefined);
     setMessages([]);
+    followLatestMessagesRef.current = true;
     setPendingInputs({});
     setInputFormLoadError('');
     setDrawerOpen(false);
@@ -987,6 +1012,7 @@ export function ChatPage({
       if (conv.id === activeConversationId) {
         setActiveConversationId(undefined);
         setMessages([]);
+        followLatestMessagesRef.current = true;
         setPendingInputs({});
         setInputFormLoadError('');
 
@@ -1011,6 +1037,44 @@ export function ChatPage({
     }
   };
 
+  const openRenameConversation = (conv: YiaiConversation) => {
+    setRenamingConversation(conv);
+    setConversationNameDraft(conv.name);
+    setRenameError('');
+  };
+
+  const handleRenameConversation = async (event: React.SyntheticEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    if (!renamingConversation) {
+      return;
+    }
+
+    const name = conversationNameDraft.trim();
+    if (!name) {
+      setRenameError('会话名称不能为空');
+      return;
+    }
+
+    setRenameSaving(true);
+    setRenameError('');
+    try {
+      const renamed = await api<{ id: string; name: string }>(
+        `/apps/${slug}/conversations/${renamingConversation.id}`,
+        { method: 'PATCH', body: JSON.stringify({ name }) }
+      );
+      setConversations((previous) =>
+        previous.map((conversation) =>
+          conversation.id === renamed.id ? { ...conversation, name: renamed.name } : conversation
+        )
+      );
+      setRenamingConversation(null);
+    } catch (err) {
+      setRenameError(err instanceof Error ? err.message : '重命名失败');
+    } finally {
+      setRenameSaving(false);
+    }
+  };
+
   const isBalanceInsufficient = account !== null && account.gift_tokens <= 0 && account.recharge_tokens <= 0;
 
   const handleSend = async (query: string) => {
@@ -1024,6 +1088,7 @@ export function ChatPage({
     }
     setLoading(true);
     setError('');
+    followLatestMessagesRef.current = true;
 
     const userFiles = pendingImage?.uploaded ? [{ type: 'image' as const, url: pendingImage.uploaded.url }] : undefined;
     const userMessage: ChatMessage = {
@@ -1260,6 +1325,7 @@ export function ChatPage({
               key={conv.id}
               className={conv.id === activeConversationId ? 'active' : ''}
               onClick={() => {
+                followLatestMessagesRef.current = true;
                 setActiveConversationId(conv.id);
                 setPendingInputs(conv.inputs);
                 setError('');
@@ -1268,17 +1334,30 @@ export function ChatPage({
               }}
             >
               <span className="conversation-name">{conv.name}</span>
-              <button
-                className="secondary delete-conversation"
-                title="删除会话"
-                onClick={(e) => {
-                  e.stopPropagation();
-                  void handleDeleteConversation(conv);
-                }}
-                type="button"
-              >
-                删除
-              </button>
+              <div className="conversation-actions">
+                <button
+                  className="secondary rename-conversation"
+                  title="重命名会话"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    openRenameConversation(conv);
+                  }}
+                  type="button"
+                >
+                  重命名
+                </button>
+                <button
+                  className="secondary delete-conversation"
+                  title="删除会话"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    void handleDeleteConversation(conv);
+                  }}
+                  type="button"
+                >
+                  删除
+                </button>
+              </div>
             </li>
           ))}
         </ul>
@@ -1352,7 +1431,7 @@ export function ChatPage({
           </div>
         )}
 
-        <div className="messages">
+        <div className="messages" ref={messagesRef} onScroll={handleMessagesScroll} data-testid="messages-viewport">
           {messages.map((msg, idx) => (
             <div key={idx} className={`message ${msg.role}`}>
               <div className="message-content">
@@ -1390,7 +1469,6 @@ export function ChatPage({
               </div>
             </div>
           ))}
-          <div ref={messagesEndRef} />
         </div>
 
         <div className="input-area">
@@ -1466,6 +1544,40 @@ export function ChatPage({
           </form>
         </div>
       </main>
+
+      {renamingConversation && (
+        <div className="modal-overlay" onClick={() => { if (!renameSaving) setRenamingConversation(null); }}>
+          <div className="modal" onClick={(event) => { event.stopPropagation(); }}>
+            <h3>重命名会话</h3>
+            <form onSubmit={(event) => { void handleRenameConversation(event); }}>
+              {renameError && <p className="error">{renameError}</p>}
+              <label>
+                会话名称
+                <input
+                  autoFocus
+                  value={conversationNameDraft}
+                  maxLength={80}
+                  onChange={(event) => { setConversationNameDraft(event.target.value); }}
+                  disabled={renameSaving}
+                />
+              </label>
+              <div className="modal-actions">
+                <button
+                  type="button"
+                  className="secondary"
+                  disabled={renameSaving}
+                  onClick={() => { setRenamingConversation(null); }}
+                >
+                  取消
+                </button>
+                <button type="submit" disabled={renameSaving}>
+                  {renameSaving ? '保存中...' : '保存'}
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
 
       {showInputForm && bootstrap?.user_input_form && (
         <InputFormModal

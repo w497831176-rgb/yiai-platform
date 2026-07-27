@@ -40,6 +40,7 @@ export async function createInMemoryPool(): Promise<Pool> {
     '007_add_yiai_app_tags_and_icon_source.sql',
     '008_add_yiai_app_types.sql',
     '009_create_hidden_conversations.sql',
+    '010_create_conversation_display_names.sql',
   ];
 
   for (const file of files) {

@@ -405,4 +405,101 @@ describe('ChatPage latest conversation inputs restore', () => {
       streamController?.close();
     });
   });
+
+  it('keeps a manually scrolled-up conversation in place while a reply arrives', async () => {
+    let streamController: ReadableStreamDefaultController<Uint8Array> | undefined;
+    fetchMock.mockImplementation((input) => {
+      const url = typeof input === 'string' ? input : input.url;
+      if (url.endsWith('/bootstrap')) {
+        return Promise.resolve(new Response(JSON.stringify({
+          app: { id: 'scroll-app', slug: 'scroll-app', name: 'Scroll App', description: null, icon: null, sort_order: 1, requires_new_conversation_inputs: false, created_at: '', updated_at: '' },
+          opening_statement: null, suggested_questions: [], user_input_form: null,
+        })));
+      }
+      if (url.endsWith('/conversations')) return Promise.resolve(new Response(JSON.stringify([{ id: 'scroll-conv', name: '历史会话', inputs: {}, status: 'normal', updated_at: 1, created_at: 1 }])));
+      if (url.includes('/conversations/') && url.endsWith('/messages')) return Promise.resolve(new Response(JSON.stringify([])));
+      if (url.endsWith('/chat')) {
+        return Promise.resolve(new Response(new ReadableStream({
+          start(controller) {
+            streamController = controller;
+          },
+        }), { status: 200 }));
+      }
+      return Promise.reject(new Error(`Unexpected fetch: ${url}`));
+    });
+
+    render(
+      <ChatPage
+        slug="scroll-app"
+        user={{ id: 'user-1', username: 'tester', role: 'user' }}
+        account={{ gift_tokens: 100, recharge_tokens: 50, daily_gift_amount: 10, gift_tokens_max: 200, last_gift_date: null }}
+        onBack={() => {}}
+        onLogout={() => {}}
+      />
+    );
+
+    await screen.findByText('历史会话');
+    const viewport = screen.getByTestId('messages-viewport');
+    Object.defineProperty(viewport, 'scrollHeight', { configurable: true, value: 1000 });
+    Object.defineProperty(viewport, 'clientHeight', { configurable: true, value: 100 });
+    const input = screen.getByPlaceholderText('输入问题...');
+    fireEvent.change(input, { target: { value: '继续提问' } });
+    fireEvent.click(screen.getByRole('button', { name: '发送' }));
+
+    await waitFor(() => {
+      expect(fetchMock.mock.calls.some(([url]) => (typeof url === 'string' ? url : url.url).endsWith('/chat'))).toBe(true);
+    });
+    viewport.scrollTop = 0;
+    fireEvent.scroll(viewport);
+    act(() => {
+      streamController?.enqueue(new TextEncoder().encode('data: {"event":"message","answer":"新回复"}\n\n'));
+    });
+    await screen.findByText('新回复');
+    expect(viewport.scrollTop).toBe(0);
+    act(() => {
+      streamController?.close();
+    });
+  });
+
+  it('renames a historical conversation through the platform API', async () => {
+    fetchMock.mockImplementation((input, init) => {
+      const url = typeof input === 'string' ? input : input.url;
+      if (url.endsWith('/bootstrap')) {
+        return Promise.resolve(new Response(JSON.stringify({
+          app: { id: 'rename-app', slug: 'rename-app', name: 'Rename App', description: null, icon: null, sort_order: 1, requires_new_conversation_inputs: false, created_at: '', updated_at: '' },
+          opening_statement: null, suggested_questions: [], user_input_form: null,
+        })));
+      }
+      if (url.endsWith('/conversations')) return Promise.resolve(new Response(JSON.stringify([{ id: 'rename-conv', name: '原始会话', inputs: {}, status: 'normal', updated_at: 1, created_at: 1 }])));
+      if (url.includes('/conversations/rename-conv') && init?.method === 'PATCH') return Promise.resolve(new Response(JSON.stringify({ id: 'rename-conv', name: '我的命盘解读' })));
+      if (url.includes('/conversations/') && url.endsWith('/messages')) return Promise.resolve(new Response(JSON.stringify([])));
+      return Promise.reject(new Error(`Unexpected fetch: ${url}`));
+    });
+
+    render(
+      <ChatPage
+        slug="rename-app"
+        user={{ id: 'user-1', username: 'tester', role: 'user' }}
+        account={{ gift_tokens: 100, recharge_tokens: 50, daily_gift_amount: 10, gift_tokens_max: 200, last_gift_date: null }}
+        onBack={() => {}}
+        onLogout={() => {}}
+      />
+    );
+
+    await screen.findByText('原始会话');
+    fireEvent.click(screen.getByRole('button', { name: '重命名' }));
+    const nameInput = screen.getByDisplayValue('原始会话');
+    fireEvent.change(nameInput, { target: { value: '我的命盘解读' } });
+    fireEvent.click(screen.getByRole('button', { name: '保存' }));
+
+    await waitFor(() => {
+      const renameCall = fetchMock.mock.calls.find(([url, init]) => {
+        const callUrl = typeof url === 'string' ? url : url.url;
+        return callUrl.includes('/conversations/rename-conv') && init?.method === 'PATCH';
+      });
+      expect(renameCall).toBeDefined();
+      expect(JSON.parse(renameCall?.[1]?.body as string)).toEqual({ name: '我的命盘解读' });
+      expect(screen.getByText('我的命盘解读')).toBeInTheDocument();
+    });
+  });
 });

@@ -428,6 +428,13 @@ button:disabled {
   white-space: nowrap;
 }
 
+.conversation-actions {
+  display: flex;
+  flex-shrink: 0;
+  gap: 0.25rem;
+}
+
+.chat-sidebar li .rename-conversation,
 .chat-sidebar li .delete-conversation {
   padding: 0.25rem 0.5rem;
   font-size: 0.75rem;
@@ -435,7 +442,9 @@ button:disabled {
   transition: opacity 0.15s ease;
 }
 
+.chat-sidebar li:hover .rename-conversation,
 .chat-sidebar li:hover .delete-conversation,
+.chat-sidebar li.active .rename-conversation,
 .chat-sidebar li.active .delete-conversation {
   opacity: 1;
 }
@@ -1229,6 +1238,7 @@ label.checkbox input {
     font-weight: 600;
   }
 
+  .chat-sidebar li .rename-conversation,
   .chat-sidebar li .delete-conversation {
     opacity: 1;
   }

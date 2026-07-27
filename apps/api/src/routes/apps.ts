@@ -10,6 +10,7 @@ import {
   listMessages,
   chatUpstream,
   hideConversation,
+  renameConversation,
   uploadFileToUpstream,
   recordUsage,
   YiaiAppNotFoundError,
@@ -22,6 +23,10 @@ import { deductForUsage, getTokenAccount } from '../services/token-account.js';
 interface RouteParams {
   slug: string;
   conversationId: string;
+}
+
+interface RenameConversationBody {
+  name?: unknown;
 }
 
 const TEN_MB = 10 * 1024 * 1024;
@@ -119,6 +124,42 @@ export function appRoutes(fastify: FastifyInstance, options: { pool: Pool }): vo
     try {
       await hideConversation(pool, slug, userId, conversationId);
       return await reply.status(204).send();
+    } catch (err) {
+      if (err instanceof YiaiAppNotFoundError) {
+        return await reply.status(404).send({ error: err.message });
+      }
+      if (err instanceof YiaiUpstreamError) {
+        return await reply.status(502).send({ error: err.message });
+      }
+      return await reply.status(500).send({ error: '服务器内部错误' });
+    }
+  });
+
+  fastify.patch('/:slug/conversations/:conversationId', async (request: FastifyRequest, reply: FastifyReply) => {
+    const params = request.params as RouteParams;
+    const { slug, conversationId } = params;
+    const userId = request.user?.id;
+    if (!userId) {
+      return await reply.status(401).send({ error: '未登录' });
+    }
+
+    const body = request.body as RenameConversationBody | undefined;
+    const name = typeof body?.name === 'string' ? body.name.trim() : '';
+    if (!name) {
+      return await reply.status(400).send({ error: '会话名称不能为空' });
+    }
+    if (name.length > 80) {
+      return await reply.status(400).send({ error: '会话名称不能超过 80 个字符' });
+    }
+
+    try {
+      const conversations = await listConversations(pool, slug, userId);
+      if (!conversations.some((conversation) => conversation.id === conversationId)) {
+        return await reply.status(404).send({ error: '会话不存在或已删除' });
+      }
+
+      await renameConversation(pool, slug, userId, conversationId, name);
+      return await reply.send({ id: conversationId, name });
     } catch (err) {
       if (err instanceof YiaiAppNotFoundError) {
         return await reply.status(404).send({ error: err.message });

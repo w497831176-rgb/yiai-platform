@@ -445,7 +445,15 @@ export async function listConversations(
     [userId, app.id]
   );
   const hiddenConversationIds = new Set(hiddenResult.rows.map((row) => row.conversation_id));
-  return (response.data ?? []).filter((conversation) => !hiddenConversationIds.has(conversation.id));
+  const displayNameResult = await pool.query<{ conversation_id: string; display_name: string }>(
+    'SELECT conversation_id, display_name FROM conversation_display_names WHERE user_id = $1 AND app_id = $2',
+    [userId, app.id]
+  );
+  const displayNames = new Map(displayNameResult.rows.map((row) => [row.conversation_id, row.display_name]));
+
+  return (response.data ?? [])
+    .filter((conversation) => !hiddenConversationIds.has(conversation.id))
+    .map((conversation) => ({ ...conversation, name: displayNames.get(conversation.id) ?? conversation.name }));
 }
 
 export async function hideConversation(
@@ -465,6 +473,32 @@ export async function hideConversation(
      ON CONFLICT (user_id, app_id, conversation_id)
      DO UPDATE SET hidden_at = EXCLUDED.hidden_at`,
     [userId, app.id, conversationId]
+  );
+
+  await pool.query(
+    'DELETE FROM conversation_display_names WHERE user_id = $1 AND app_id = $2 AND conversation_id = $3',
+    [userId, app.id, conversationId]
+  );
+}
+
+export async function renameConversation(
+  pool: Pool,
+  slug: string,
+  userId: string,
+  conversationId: string,
+  displayName: string
+): Promise<void> {
+  const app = await findAppBySlug(pool, slug);
+  if (!app) {
+    throw new YiaiAppNotFoundError(slug);
+  }
+
+  await pool.query(
+    `INSERT INTO conversation_display_names (user_id, app_id, conversation_id, display_name)
+     VALUES ($1, $2, $3, $4)
+     ON CONFLICT (user_id, app_id, conversation_id)
+     DO UPDATE SET display_name = EXCLUDED.display_name, updated_at = NOW()`,
+    [userId, app.id, conversationId, displayName]
   );
 }
 
