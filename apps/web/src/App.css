@@ -304,6 +304,8 @@ button:disabled {
   font-size: 0.875rem;
   line-height: 1.5;
   font-weight: 400;
+  overflow-wrap: anywhere;
+  word-break: break-word;
 }
 
 .app-tags {
