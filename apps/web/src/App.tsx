@@ -440,7 +440,7 @@ function ProfilePage({
   return (
     <div className="profile-page">
       <header className="profile-header">
-        <h1>YIAI Platform</h1>
+        <h1>OAI Platform</h1>
         <div className="user-info">
           <button className="secondary" onClick={onBack}>
             返回
@@ -568,7 +568,7 @@ function AppHub({
   return (
     <div className="hub-page">
       <header className="hub-header">
-        <h1>YIAI Platform</h1>
+        <h1>OAI Platform</h1>
         <div className="user-actions">
           <TokenBadge account={account} onClick={onLedger} />
           <span className="user-name">

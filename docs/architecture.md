@@ -1,4 +1,4 @@
-# YIAI Platform 架构说明
+# OAI Platform 架构说明
 
 ## 总体架构
 
@@ -18,7 +18,7 @@ Fastify API
 
 ## 数据流说明
 
-1. 浏览器访问 YIAI Platform 前端页面。
+1. 浏览器访问 OAI Platform 前端页面。
 2. Nginx 提供前端静态资源；对 `/api/*` 请求反向代理到 Fastify API。
 3. Fastify API 处理业务逻辑，将持久化数据写入 PostgreSQL。
 4. 未来需要调用 Dify 时，由 Fastify API 使用后端保存的 Dify API Key 发起调用，浏览器不直接接触 Key。

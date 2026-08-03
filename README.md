@@ -1,6 +1,6 @@
-# YIAI Platform
+# OAI Platform
 
-YIAI Platform 是面向 C 端用户的 Dify Chatflow 聚合平台。当前 V1.3 已实现用户登录/注册、应用中心、Chatflow 聊天、双额度 Token 账本、管理员后台等核心功能。
+OAI Platform 是面向 C 端用户的 Dify Chatflow 聚合平台。当前 V1.3 已实现用户登录/注册、应用中心、Chatflow 聊天、双额度 Token 账本、管理员后台等核心功能。
 
 ## 当前支持范围
 
@@ -169,7 +169,7 @@ docker compose -f compose.prod.yml config
 
 ## NAS 部署路径
 
-YIAI Platform 的所有 NAS 代码、bind mount 数据和备份路径均位于 `/volume3`：
+OAI Platform 的所有 NAS 代码、bind mount 数据和备份路径均位于 `/volume3`：
 
 - 测试代码目录：`/volume3/docker/yiai-platform-test`
 - 测试数据目录：`/volume3/docker/volumes/yiai-platform-test`

@@ -48,4 +48,4 @@ Rollback is immediate: restore the NAS reverse-proxy upstream to the preserved l
 
 ## External dependency
 
-YIAI Platform is a portal, not the YIAI/Dify server. Chatflow requests continue to use the configured YIAI API endpoint. The migration does not move, edit or stop that upstream service.
+OAI Platform is a portal, not the YIAI/Dify server. Chatflow requests continue to use the configured YIAI API endpoint. The migration does not move, edit or stop that upstream service.
