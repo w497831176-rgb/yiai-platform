@@ -456,6 +456,29 @@ describe('App Routes', () => {
     ]);
   });
 
+  it('rejects more than ten images before calling the upstream chat API', async () => {
+    const app = await buildTestApp(pool);
+    const token = await loginUser(app, 'test_user', 'testpass');
+
+    const response = await app.inject({
+      method: 'POST',
+      url: '/api/apps/zhouyi-divination/chat',
+      headers: { Authorization: `Bearer ${token}` },
+      payload: {
+        query: 'describe images',
+        files: Array.from({ length: 11 }, (_, index) => ({
+          type: 'image',
+          transfer_method: 'local_file',
+          upload_file_id: `file-${String(index + 1)}`,
+        })),
+      },
+    });
+
+    expect(response.statusCode).toBe(400);
+    expect(JSON.parse(response.body)).toEqual({ error: '一次最多发送 10 张图片' });
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
   it('rejects chat when both gift and recharge balances are not positive', async () => {
     const app = await buildTestApp(pool);
     const userId = await createTestUser(pool, 'broke_user', 'user', 'testpass');

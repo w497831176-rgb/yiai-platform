@@ -30,6 +30,7 @@ interface RenameConversationBody {
 }
 
 const TEN_MB = 10 * 1024 * 1024;
+const MAX_CHAT_FILES = 10;
 
 function validateRequiredInputs(bootstrap: AppBootstrapResult, inputs: Record<string, unknown> | undefined): string | null {
   if (!bootstrap.user_input_form || bootstrap.user_input_form.length === 0) {
@@ -267,6 +268,9 @@ export function appRoutes(fastify: FastifyInstance, options: { pool: Pool }): vo
     const hasFiles = Array.isArray(body?.files) && body.files.length > 0;
     if (!body || typeof body.query !== 'string' || (body.query.trim().length === 0 && !hasFiles)) {
       return await reply.status(400).send({ error: '请求格式错误' });
+    }
+    if (Array.isArray(body.files) && body.files.length > MAX_CHAT_FILES) {
+      return await reply.status(400).send({ error: '一次最多发送 10 张图片' });
     }
 
     let upstreamResponse: Response;

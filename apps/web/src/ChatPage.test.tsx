@@ -503,11 +503,12 @@ describe('ChatPage latest conversation inputs restore', () => {
     });
   });
 
-  it('sends a Dify-uploaded image even when the upload response has no url', async () => {
-    const createObjectURL = vi.fn(() => 'blob:dify-image-preview');
+  it('keeps image drafts local and uploads them only when the user sends', async () => {
+    const createObjectURL = vi.fn((file: Blob) => `blob:${(file as File).name}`);
     const revokeObjectURL = vi.fn();
     vi.stubGlobal('URL', { createObjectURL, revokeObjectURL });
 
+    let uploadCount = 0;
     fetchMock.mockImplementation((input) => {
       const url = typeof input === 'string' ? input : input.url;
       if (url.endsWith('/bootstrap')) {
@@ -517,7 +518,10 @@ describe('ChatPage latest conversation inputs restore', () => {
         })));
       }
       if (url.endsWith('/conversations')) return Promise.resolve(new Response(JSON.stringify([])));
-      if (url.endsWith('/files')) return Promise.resolve(new Response(JSON.stringify({ id: 'dify-file-1', type: 'image' }), { status: 200 }));
+      if (url.endsWith('/files')) {
+        uploadCount += 1;
+        return Promise.resolve(new Response(JSON.stringify({ id: `dify-file-${String(uploadCount)}`, type: 'image' }), { status: 200 }));
+      }
       if (url.endsWith('/chat')) return Promise.resolve(new Response(new ReadableStream({ start(controller) { controller.close(); } }), { status: 200 }));
       return Promise.reject(new Error(`Unexpected fetch: ${url}`));
     });
@@ -537,22 +541,79 @@ describe('ChatPage latest conversation inputs restore', () => {
     if (!(fileInput instanceof HTMLInputElement)) {
       throw new Error('image input is missing');
     }
-    fireEvent.change(fileInput, { target: { files: [new File(['image'], 'chart.png', { type: 'image/png' })] } });
-
-    await waitFor(() => {
-      expect(fetchMock.mock.calls.some(([url]) => (typeof url === 'string' ? url : url.url).endsWith('/files'))).toBe(true);
-      expect(screen.queryByText('上传返回数据不完整')).not.toBeInTheDocument();
+    fireEvent.change(fileInput, {
+      target: {
+        files: [
+          new File(['image-one'], 'chart-one.png', { type: 'image/png' }),
+          new File(['image-two'], 'chart-two.png', { type: 'image/png' }),
+        ],
+      },
     });
+
+    await screen.findByText('已选 2/10 张图片');
+    expect(fetchMock.mock.calls.some(([url]) => (typeof url === 'string' ? url : url.url).endsWith('/files'))).toBe(false);
     fireEvent.click(screen.getByRole('button', { name: '发送' }));
 
     await waitFor(() => {
       const chatCall = fetchMock.mock.calls.find(([url]) => (typeof url === 'string' ? url : url.url).endsWith('/chat'));
       expect(chatCall).toBeDefined();
-      expect(JSON.parse(chatCall?.[1]?.body as string).files).toEqual([
+      const chatBody = JSON.parse(chatCall?.[1]?.body as string) as { files: unknown[] };
+      expect(chatBody.files).toEqual([
         { type: 'image', transfer_method: 'local_file', upload_file_id: 'dify-file-1' },
+        { type: 'image', transfer_method: 'local_file', upload_file_id: 'dify-file-2' },
       ]);
-      expect(screen.getByAltText('消息文件')).toHaveAttribute('src', 'blob:dify-image-preview');
+      expect(screen.getAllByAltText('消息文件')).toHaveLength(2);
+      expect(screen.getAllByAltText('消息文件')[0]).toHaveAttribute('src', 'blob:chart-one.png');
+      expect(screen.getAllByAltText('消息文件')[1]).toHaveAttribute('src', 'blob:chart-two.png');
       expect(revokeObjectURL).not.toHaveBeenCalled();
     });
+  });
+
+  it('limits local image drafts to ten and lets the user remove one before sending', async () => {
+    const createObjectURL = vi.fn((file: Blob) => `blob:${(file as File).name}`);
+    const revokeObjectURL = vi.fn();
+    vi.stubGlobal('URL', { createObjectURL, revokeObjectURL });
+
+    fetchMock.mockImplementation((input) => {
+      const url = typeof input === 'string' ? input : input.url;
+      if (url.endsWith('/bootstrap')) {
+        return Promise.resolve(new Response(JSON.stringify({
+          app: { id: 'draft-image-app', slug: 'draft-image-app', name: '图片草稿测试', description: null, icon: null, sort_order: 1, requires_new_conversation_inputs: false, created_at: '', updated_at: '' },
+          opening_statement: null, suggested_questions: [], user_input_form: null,
+        })));
+      }
+      if (url.endsWith('/conversations')) return Promise.resolve(new Response(JSON.stringify([])));
+      return Promise.reject(new Error(`Unexpected fetch: ${url}`));
+    });
+
+    const { container } = render(
+      <ChatPage
+        slug="draft-image-app"
+        user={{ id: 'user-1', username: 'tester', role: 'user' }}
+        account={{ gift_tokens: 100, recharge_tokens: 50, daily_gift_amount: 10, gift_tokens_max: 200, last_gift_date: null }}
+        onBack={() => {}}
+        onLogout={() => {}}
+      />
+    );
+
+    await screen.findByPlaceholderText('输入问题...');
+    const fileInput = container.querySelector('input[type="file"]');
+    if (!(fileInput instanceof HTMLInputElement)) {
+      throw new Error('image input is missing');
+    }
+    fireEvent.change(fileInput, {
+      target: {
+        files: Array.from({ length: 11 }, (_, index) =>
+          new File(['image'], `image-${String(index + 1)}.png`, { type: 'image/png' })
+        ),
+      },
+    });
+
+    await screen.findByText('已选 10/10 张图片');
+    expect(fetchMock.mock.calls.some(([url]) => (typeof url === 'string' ? url : url.url).endsWith('/files'))).toBe(false);
+
+    fireEvent.click(screen.getByRole('button', { name: '删除已选图片 10' }));
+    expect(screen.getByText('已选 9/10 张图片')).toBeInTheDocument();
+    expect(revokeObjectURL).toHaveBeenCalledWith('blob:image-10.png');
   });
 });

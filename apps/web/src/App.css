@@ -480,12 +480,18 @@ button:disabled {
   border-top: 1px solid #e0e0e0;
 }
 
-.pending-image {
+.pending-images {
   display: flex;
   align-items: center;
-  gap: 0.75rem;
+  flex-wrap: wrap;
+  gap: 0.5rem;
   padding: 0.5rem 1rem;
   border-bottom: 1px solid #f0f0f0;
+}
+
+.pending-image {
+  position: relative;
+  flex: 0 0 auto;
 }
 
 .pending-image img {
@@ -493,17 +499,30 @@ button:disabled {
   height: 3rem;
   object-fit: cover;
   border-radius: 8px;
+  display: block;
+}
+
+.pending-image-count {
+  color: #64748b;
+  font-size: 0.75rem;
+  white-space: nowrap;
 }
 
 .uploading-hint {
-  font-size: 0.875rem;
-  color: #666;
+  color: #64748b;
+  font-size: 0.75rem;
 }
 
 .pending-image .remove-image {
-  margin-left: auto;
-  padding: 0.25rem 0.5rem;
+  position: absolute;
+  top: -0.35rem;
+  right: -0.35rem;
+  min-height: 1.25rem;
+  width: 1.25rem;
+  padding: 0;
+  border-radius: 999px;
   font-size: 0.75rem;
+  line-height: 1;
 }
 
 .chat-main {
@@ -704,10 +723,13 @@ button:disabled {
 
 .message-files {
   margin-top: 0.5rem;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
 }
 
 .message-files img {
-  max-width: 100%;
+  max-width: min(100%, 12rem);
   max-height: 200px;
   border-radius: 8px;
 }

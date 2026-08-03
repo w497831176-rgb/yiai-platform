@@ -95,6 +95,12 @@ interface ChatMessage {
   createdAt?: number;
 }
 
+interface PendingImageDraft {
+  id: string;
+  file: File;
+  previewUrl: string;
+}
+
 interface TokenAccount {
   gift_tokens: number;
   recharge_tokens: number;
@@ -152,6 +158,7 @@ type View =
   | { type: 'admin' };
 
 const TOKEN_KEY = 'yiai_token';
+const MAX_DRAFT_IMAGES = 10;
 
 function formatMessageMeta(msg: ChatMessage): string {
   const parts: string[] = [];
@@ -758,14 +765,8 @@ export function ChatPage({
   const [conversationNameDraft, setConversationNameDraft] = useState('');
   const [renameError, setRenameError] = useState('');
   const [renameSaving, setRenameSaving] = useState(false);
-  const [pendingImage, setPendingImage] = useState<
-    | {
-        file: File;
-        previewUrl: string;
-        uploaded?: { id: string; type: string; url?: string };
-      }
-    | null
-  >(null);
+  const [pendingImages, setPendingImages] = useState<PendingImageDraft[]>([]);
+  const [imageUploadProgress, setImageUploadProgress] = useState('');
   const messagesRef = useRef<HTMLDivElement>(null);
   const followLatestMessagesRef = useRef(true);
   const abortControllerRef = useRef<AbortController | null>(null);
@@ -970,33 +971,60 @@ export function ChatPage({
     return { id: data.id, type: data.type ?? 'image', ...(data.url ? { url: data.url } : {}) };
   };
 
-  const clearPendingImage = (preservePreview = false) => {
-    if (!preservePreview && pendingImage?.previewUrl) {
-      URL.revokeObjectURL(pendingImage.previewUrl);
-    }
-    setPendingImage(null);
+  const clearPendingImages = (revokePreviews = true) => {
+    setPendingImages((previous) => {
+      if (revokePreviews) {
+        previous.forEach((draft) => {
+          URL.revokeObjectURL(draft.previewUrl);
+        });
+      }
+      return [];
+    });
     if (fileInputRef.current) {
       fileInputRef.current.value = '';
     }
   };
 
   const handleImageSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    if (!file) {
+    const selectedFiles = Array.from(e.target.files ?? []);
+    e.target.value = '';
+    if (selectedFiles.length === 0) {
       return;
     }
-    const previewUrl = URL.createObjectURL(file);
-    setPendingImage({ file, previewUrl });
 
-    void (async () => {
-      try {
-        const uploaded = await uploadImage(file);
-        setPendingImage((prev) => (prev ? { ...prev, uploaded } : null));
-      } catch (err) {
-        setError(err instanceof Error ? err.message : '图片上传失败');
-        clearPendingImage();
+    const imageFiles = selectedFiles.filter((file) => file.type.startsWith('image/'));
+    const available = Math.max(0, MAX_DRAFT_IMAGES - pendingImages.length);
+    const acceptedFiles = imageFiles.slice(0, available);
+
+    if (acceptedFiles.length > 0) {
+      const timestamp = Date.now();
+      setPendingImages((previous) => [
+        ...previous,
+        ...acceptedFiles.map((file, index) => ({
+          id: `${String(timestamp)}-${String(index)}-${Math.random().toString(36).slice(2)}`,
+          file,
+          previewUrl: URL.createObjectURL(file),
+        })),
+      ]);
+    }
+
+    if (imageFiles.length !== selectedFiles.length) {
+      setError('仅支持图片文件');
+    } else if (acceptedFiles.length !== imageFiles.length) {
+      setError(`一次最多选择 ${String(MAX_DRAFT_IMAGES)} 张图片`);
+    } else {
+      setError('');
+    }
+  };
+
+  const removePendingImage = (id: string) => {
+    setPendingImages((previous) => {
+      const draft = previous.find((item) => item.id === id);
+      if (draft) {
+        URL.revokeObjectURL(draft.previewUrl);
       }
-    })();
+      return previous.filter((item) => item.id !== id);
+    });
   };
 
   const handleDeleteConversation = async (conv: YiaiConversation) => {
@@ -1079,7 +1107,8 @@ export function ChatPage({
 
   const handleSend = async (query: string) => {
     const text = query.trim();
-    if ((!text && !pendingImage?.uploaded) || loading) {
+    const imageDrafts = pendingImages;
+    if ((!text && imageDrafts.length === 0) || loading) {
       return;
     }
     if (isBalanceInsufficient) {
@@ -1090,8 +1119,26 @@ export function ChatPage({
     setError('');
     followLatestMessagesRef.current = true;
 
-    const userFiles = pendingImage?.uploaded
-      ? [{ type: 'image' as const, url: pendingImage.uploaded.url ?? pendingImage.previewUrl }]
+    let uploadedImages: Array<{ id: string; type: string; url?: string }>;
+    try {
+      uploadedImages = [];
+      for (const [index, draft] of imageDrafts.entries()) {
+        setImageUploadProgress(`正在上传图片 ${String(index + 1)}/${String(imageDrafts.length)}...`);
+        uploadedImages.push(await uploadImage(draft.file));
+      }
+    } catch (err) {
+      setImageUploadProgress('');
+      setError(err instanceof Error ? err.message : '图片上传失败');
+      setLoading(false);
+      return;
+    }
+    setImageUploadProgress('');
+    setInput('');
+    // Keep the preview URLs alive because the just-created user message uses them.
+    clearPendingImages(false);
+
+    const userFiles = imageDrafts.length > 0
+      ? imageDrafts.map((draft) => ({ type: 'image' as const, url: draft.previewUrl }))
       : undefined;
     const userMessage: ChatMessage = {
       role: 'user',
@@ -1109,14 +1156,12 @@ export function ChatPage({
     if (activeConversationId) {
       body.conversation_id = activeConversationId;
     }
-    if (pendingImage?.uploaded) {
-      body.files = [
-        {
+    if (uploadedImages.length > 0) {
+      body.files = uploadedImages.map((uploaded) => ({
           type: 'image',
           transfer_method: 'local_file',
-          upload_file_id: pendingImage.uploaded.id,
-        },
-      ];
+          upload_file_id: uploaded.id,
+        }));
     }
 
     abortControllerRef.current?.abort();
@@ -1251,13 +1296,10 @@ export function ChatPage({
   };
 
   const sendCurrentInput = () => {
-    if (loading || !!inputFormLoadError || isBalanceInsufficient || (!input.trim() && !pendingImage?.uploaded)) {
+    if (loading || !!inputFormLoadError || isBalanceInsufficient || (!input.trim() && pendingImages.length === 0)) {
       return;
     }
-    const preserveImagePreview = Boolean(pendingImage?.uploaded && !pendingImage.uploaded.url);
     void handleSend(input);
-    setInput('');
-    clearPendingImage(preserveImagePreview);
   };
 
   const insertInputNewline = () => {
@@ -1475,18 +1517,24 @@ export function ChatPage({
         </div>
 
         <div className="input-area">
-          {pendingImage && (
-            <div className="pending-image">
-              <img src={pendingImage.previewUrl} alt="待发送图片" />
-              {!pendingImage.uploaded && <span className="uploading-hint">图片上传中...</span>}
-              <button
-                className="secondary remove-image"
-                onClick={() => { clearPendingImage(); }}
-                type="button"
-                disabled={loading}
-              >
-                移除
-              </button>
+          {pendingImages.length > 0 && (
+            <div className="pending-images" data-testid="image-drafts">
+              <span className="pending-image-count">已选 {pendingImages.length}/{MAX_DRAFT_IMAGES} 张图片</span>
+              {pendingImages.map((draft, index) => (
+                <div className="pending-image" key={draft.id}>
+                  <img src={draft.previewUrl} alt={`待发送图片 ${String(index + 1)}`} />
+                  <button
+                    className="secondary remove-image"
+                    onClick={() => { removePendingImage(draft.id); }}
+                    type="button"
+                    disabled={loading}
+                    aria-label={`删除已选图片 ${String(index + 1)}`}
+                  >
+                    ×
+                  </button>
+                </div>
+              ))}
+              {imageUploadProgress && <span className="uploading-hint">{imageUploadProgress}</span>}
             </div>
           )}
           <form
@@ -1511,7 +1559,7 @@ export function ChatPage({
                 }
               }}
               placeholder={isBalanceInsufficient ? '余额不足，请等待每日赠送或联系管理员充值' : '输入问题...'}
-              disabled={loading || !!inputFormLoadError || (pendingImage !== null && !pendingImage.uploaded)}
+              disabled={loading || !!inputFormLoadError}
               enterKeyHint="enter"
               aria-label="聊天输入框"
             />
@@ -1519,6 +1567,7 @@ export function ChatPage({
               ref={fileInputRef}
               type="file"
               accept="image/*"
+              multiple
               onChange={handleImageSelect}
               style={{ display: 'none' }}
             />
@@ -1528,7 +1577,7 @@ export function ChatPage({
               onClick={() => {
                 fileInputRef.current?.click();
               }}
-              disabled={loading || !!inputFormLoadError || pendingImage !== null}
+              disabled={loading || !!inputFormLoadError || pendingImages.length >= MAX_DRAFT_IMAGES}
             >
               图片
             </button>
@@ -1539,10 +1588,10 @@ export function ChatPage({
                 loading ||
                 !!inputFormLoadError ||
                 isBalanceInsufficient ||
-                (!input.trim() && !pendingImage?.uploaded)
+                (!input.trim() && pendingImages.length === 0)
               }
             >
-              {loading ? '发送中...' : '发送'}
+              {imageUploadProgress || (loading ? '发送中...' : '发送')}
             </button>
           </form>
         </div>
