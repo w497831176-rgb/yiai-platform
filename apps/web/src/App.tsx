@@ -762,7 +762,7 @@ export function ChatPage({
     | {
         file: File;
         previewUrl: string;
-        uploaded?: { id: string; type: string; url: string };
+        uploaded?: { id: string; type: string; url?: string };
       }
     | null
   >(null);
@@ -946,7 +946,7 @@ export function ChatPage({
     onBack();
   };
 
-  const uploadImage = async (file: File): Promise<{ id: string; type: string; url: string }> => {
+  const uploadImage = async (file: File): Promise<{ id: string; type: string; url?: string }> => {
     const formData = new FormData();
     formData.append('file', file);
     const token = localStorage.getItem(TOKEN_KEY);
@@ -964,14 +964,14 @@ export function ChatPage({
     if (!response.ok) {
       throw new Error(data.error ?? '上传失败');
     }
-    if (!data.id || !data.url) {
+    if (!data.id) {
       throw new Error('上传返回数据不完整');
     }
-    return { id: data.id, type: data.type ?? 'image', url: data.url };
+    return { id: data.id, type: data.type ?? 'image', ...(data.url ? { url: data.url } : {}) };
   };
 
-  const clearPendingImage = () => {
-    if (pendingImage?.previewUrl) {
+  const clearPendingImage = (preservePreview = false) => {
+    if (!preservePreview && pendingImage?.previewUrl) {
       URL.revokeObjectURL(pendingImage.previewUrl);
     }
     setPendingImage(null);
@@ -1090,7 +1090,9 @@ export function ChatPage({
     setError('');
     followLatestMessagesRef.current = true;
 
-    const userFiles = pendingImage?.uploaded ? [{ type: 'image' as const, url: pendingImage.uploaded.url }] : undefined;
+    const userFiles = pendingImage?.uploaded
+      ? [{ type: 'image' as const, url: pendingImage.uploaded.url ?? pendingImage.previewUrl }]
+      : undefined;
     const userMessage: ChatMessage = {
       role: 'user',
       content: text,
@@ -1252,9 +1254,10 @@ export function ChatPage({
     if (loading || !!inputFormLoadError || isBalanceInsufficient || (!input.trim() && !pendingImage?.uploaded)) {
       return;
     }
+    const preserveImagePreview = Boolean(pendingImage?.uploaded && !pendingImage.uploaded.url);
     void handleSend(input);
     setInput('');
-    clearPendingImage();
+    clearPendingImage(preserveImagePreview);
   };
 
   const insertInputNewline = () => {
@@ -1478,7 +1481,7 @@ export function ChatPage({
               {!pendingImage.uploaded && <span className="uploading-hint">图片上传中...</span>}
               <button
                 className="secondary remove-image"
-                onClick={clearPendingImage}
+                onClick={() => { clearPendingImage(); }}
                 type="button"
                 disabled={loading}
               >

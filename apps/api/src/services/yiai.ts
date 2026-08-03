@@ -627,13 +627,17 @@ export async function uploadFileToUpstream(
 
   const data = (await response.json()) as Record<string, unknown>;
   const id = typeof data.id === 'string' ? data.id : '';
-  const urlField = typeof data.url === 'string' ? data.url : '';
+  if (!id) {
+    throw new YiaiUpstreamError('文件上传失败：上游未返回文件 ID');
+  }
+
+  const urlField = typeof data.url === 'string' && data.url.length > 0 ? data.url : undefined;
   const name = typeof data.name === 'string' ? data.name : undefined;
 
   return {
     id,
     type: 'image',
-    url: urlField,
+    ...(urlField !== undefined ? { url: urlField } : {}),
     ...(name !== undefined ? { name } : {}),
   };
 }

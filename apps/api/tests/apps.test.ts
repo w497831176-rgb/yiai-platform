@@ -727,7 +727,7 @@ describe('App Routes', () => {
 
   it('uploads image to upstream and returns safe file object', async () => {
     fetchMock.mockResolvedValueOnce(
-      new Response(JSON.stringify({ id: 'file-upstream-1', url: 'https://cdn.example.com/file.png', name: 'file.png' }))
+      new Response(JSON.stringify({ id: 'file-upstream-1', name: 'file.png' }))
     );
 
     const app = await buildTestApp(pool);
@@ -752,7 +752,7 @@ describe('App Routes', () => {
     const result = JSON.parse(response.body) as UploadedFile & { name?: string };
     expect(result.id).toBe('file-upstream-1');
     expect(result.type).toBe('image');
-    expect(result.url).toBe('https://cdn.example.com/file.png');
+    expect(result).not.toHaveProperty('url');
     expect(result.name).toBe('file.png');
 
     expect(fetchMock).toHaveBeenCalledTimes(1);

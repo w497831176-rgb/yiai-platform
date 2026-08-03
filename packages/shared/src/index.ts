@@ -130,7 +130,7 @@ export interface ChatRequest {
 export interface UploadedFile {
   id: string;
   type: string;
-  url: string;
+  url?: string;
 }
 
 export interface ChatStreamEvent {
