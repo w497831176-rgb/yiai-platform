@@ -601,11 +601,12 @@ export async function uploadFileToUpstream(
 
   const baseUrl = app.api_base_url.replace(/\/$/, '');
   const upstreamUserId = getUpstreamUserId(userId);
-  const url = `${baseUrl}/files?user=${encodeURIComponent(upstreamUserId)}`;
+  const url = `${baseUrl}/files/upload`;
 
   const formData = new FormData();
   const fileBytes = new Uint8Array(file.buffer);
   formData.append('file', new Blob([fileBytes], { type: file.mimetype }), file.filename);
+  formData.append('user', upstreamUserId);
 
   let response: Response;
   try {

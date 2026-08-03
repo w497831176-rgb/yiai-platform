@@ -757,9 +757,12 @@ describe('App Routes', () => {
 
     expect(fetchMock).toHaveBeenCalledTimes(1);
     const [url, init] = fetchMock.mock.calls[0];
-    expect(url).toContain('/files?user=yiai-platform-');
+    expect(url).toContain('/files/upload');
     expect((init as { method: string }).method).toBe('POST');
     expect((init as { headers: Record<string, string> }).headers.Authorization).toBe('Bearer test-key');
+    const formData = (init as { body: FormData }).body;
+    expect(formData.get('user')).toMatch(/^yiai-platform-/);
+    expect(formData.get('file')).toBeInstanceOf(Blob);
   });
 
   it('hides a conversation locally without calling YIAI deletion APIs', async () => {
