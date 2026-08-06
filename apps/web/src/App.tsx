@@ -32,6 +32,7 @@ interface YiaiApp {
   icon_background: string | null;
   tags?: string[];
   sort_order: number;
+  supports_images: boolean;
   requires_new_conversation_inputs: boolean;
 }
 
@@ -142,6 +143,7 @@ interface AdminApp {
   api_key_configured: boolean;
   api_key_preview?: string | null;
   enabled: boolean;
+  supports_images: boolean;
   sort_order: number;
   requires_new_conversation_inputs: boolean;
   agent_input_form: UserInputFormField[];
@@ -772,6 +774,7 @@ export function ChatPage({
   const abortControllerRef = useRef<AbortController | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const chatInputRef = useRef<HTMLTextAreaElement>(null);
+  const supportsImages = bootstrap?.app.supports_images === true;
 
   const scrollToBottom = () => {
     const messagesElement = messagesRef.current;
@@ -986,6 +989,11 @@ export function ChatPage({
   };
 
   const handleImageSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
+    if (!supportsImages) {
+      e.target.value = '';
+      setError('此应用暂不支持图片');
+      return;
+    }
     const selectedFiles = Array.from(e.target.files ?? []);
     e.target.value = '';
     if (selectedFiles.length === 0) {
@@ -1109,6 +1117,10 @@ export function ChatPage({
     const text = query.trim();
     const imageDrafts = pendingImages;
     if ((!text && imageDrafts.length === 0) || loading) {
+      return;
+    }
+    if (imageDrafts.length > 0 && !supportsImages) {
+      setError('此应用暂不支持图片');
       return;
     }
     if (isBalanceInsufficient) {
@@ -1517,7 +1529,7 @@ export function ChatPage({
         </div>
 
         <div className="input-area">
-          {pendingImages.length > 0 && (
+          {supportsImages && pendingImages.length > 0 && (
             <div className="pending-images" data-testid="image-drafts">
               <span className="pending-image-count">已选 {pendingImages.length}/{MAX_DRAFT_IMAGES} 张图片</span>
               {pendingImages.map((draft, index) => (
@@ -1563,6 +1575,8 @@ export function ChatPage({
               enterKeyHint="enter"
               aria-label="聊天输入框"
             />
+            {supportsImages && (
+              <>
             <input
               ref={fileInputRef}
               type="file"
@@ -1581,6 +1595,8 @@ export function ChatPage({
             >
               图片
             </button>
+              </>
+            )}
             <button
               type="button"
               onClick={sendCurrentInput}
@@ -2326,6 +2342,7 @@ function AdminAppsTab() {
     api_key: '',
     agent_input_form: '[]',
     enabled: true,
+    supports_images: false,
   });
   const [createFormError, setCreateFormError] = useState('');
 
@@ -2395,6 +2412,7 @@ function AdminAppsTab() {
             api_key: createForm.api_key,
             ...(agentInputForm !== undefined ? { agent_input_form: agentInputForm } : {}),
             enabled: createForm.enabled,
+            supports_images: createForm.supports_images,
           }),
         });
         setCreating(false);
@@ -2406,6 +2424,7 @@ function AdminAppsTab() {
           api_key: '',
           agent_input_form: '[]',
           enabled: true,
+          supports_images: false,
         });
         setMessage('应用已创建，并已从 YIAI 同步信息');
         await loadApps();
@@ -2434,6 +2453,7 @@ function AdminAppsTab() {
     if (!settingsApp) return;
     const form = event.currentTarget;
     const enabled = (form.elements.namedItem('enabled') as HTMLInputElement).checked;
+    const supportsImages = (form.elements.namedItem('supports_images') as HTMLInputElement).checked;
     const name = (form.elements.namedItem('name') as HTMLInputElement).value.trim();
     const description = (form.elements.namedItem('description') as HTMLTextAreaElement).value.trim();
     const icon = (form.elements.namedItem('icon') as HTMLInputElement).value.trim();
@@ -2462,6 +2482,7 @@ function AdminAppsTab() {
           method: 'PATCH',
           body: JSON.stringify({
             enabled,
+            supports_images: supportsImages,
             name,
             description,
             tags,
@@ -2537,9 +2558,10 @@ function AdminAppsTab() {
             <tr>
               <th>应用</th>
               <th>类型</th>
-              <th>连接</th>
-              <th>启用</th>
-              <th>新对话采集</th>
+                <th>连接</th>
+                <th>启用</th>
+                <th>支持图片</th>
+                <th>新对话采集</th>
               <th>操作</th>
             </tr>
           </thead>
@@ -2571,6 +2593,7 @@ function AdminAppsTab() {
                   {app.api_key_preview && <code>{app.api_key_preview}</code>}
                 </td>
                 <td>{app.enabled ? '已启用' : '已停用'}</td>
+                <td>{app.supports_images ? '支持' : '不支持'}</td>
                 <td>{app.requires_new_conversation_inputs ? '需要采集信息' : '无需采集'}</td>
                 <td className="admin-app-actions">
                   <button className="secondary" onClick={() => { setSettingsApp(app); }}>平台设置</button>
@@ -2656,6 +2679,15 @@ function AdminAppsTab() {
               <label className="checkbox">
                 <input
                   type="checkbox"
+                  checked={createForm.supports_images}
+                  onChange={(event) => { setCreateForm((previous) => ({ ...previous, supports_images: event.target.checked })); }}
+                />
+                是否支持图片
+              </label>
+              <p className="input-hint">开启后，聊天框会显示图片上传按钮；默认关闭。</p>
+              <label className="checkbox">
+                <input
+                  type="checkbox"
                   checked={createForm.enabled}
                   onChange={(event) => { setCreateForm((previous) => ({ ...previous, enabled: event.target.checked })); }}
                 />
@@ -2692,6 +2724,11 @@ function AdminAppsTab() {
                 标签（用逗号分隔）
                 <input name="tags" type="text" defaultValue={(settingsApp.tags ?? []).join('，')} placeholder="例如：哲学，国学" />
               </label>
+              <label className="checkbox">
+                <input name="supports_images" type="checkbox" defaultChecked={settingsApp.supports_images} />
+                是否支持图片
+              </label>
+              <p className="input-hint">开启后，聊天框会显示图片上传按钮；关闭后平台会拒绝图片上传和带图消息。</p>
               {settingsApp.app_type === 'agent' && (
                 <label>
                   Agent 新对话信息表单（JSON 数组）

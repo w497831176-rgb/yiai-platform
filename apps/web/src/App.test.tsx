@@ -55,6 +55,7 @@ describe('AppHub', () => {
               icon_url: null,
               icon_background: null,
               sort_order: 1,
+              supports_images: false,
               requires_new_conversation_inputs: false,
             },
           ])
@@ -217,6 +218,7 @@ describe('AdminAppsTab', () => {
               api_key_configured: true,
               api_key_preview: 'test-k…-key',
               enabled: true,
+              supports_images: false,
               sort_order: 1,
               requires_new_conversation_inputs: false,
             },
@@ -233,6 +235,7 @@ describe('AdminAppsTab', () => {
               api_key_configured: true,
               api_key_preview: 'input-…-key',
               enabled: true,
+              supports_images: true,
               sort_order: 2,
               requires_new_conversation_inputs: true,
             },
@@ -381,6 +384,7 @@ describe('AdminAppsTab', () => {
       expect(body.app_type).toBe('chatflow');
       expect(body).not.toHaveProperty('sort_order');
       expect(body.enabled).toBe(true);
+      expect(body.supports_images).toBe(false);
       expect(body).not.toHaveProperty('requires_new_conversation_inputs');
     });
 
@@ -612,6 +616,9 @@ describe('AdminAppsTab', () => {
     fireEvent.click(screen.getAllByRole('button', { name: '平台设置' })[0]);
 
     expect(screen.getByRole('heading', { name: '平台设置：Test App' })).toBeInTheDocument();
+    const supportsImages = screen.getByRole('checkbox', { name: '是否支持图片' });
+    expect(supportsImages).not.toBeChecked();
+    fireEvent.click(supportsImages);
     fireEvent.change(screen.getByLabelText('应用名称'), { target: { value: 'Renamed App' } });
     fireEvent.change(screen.getByLabelText('应用说明'), { target: { value: 'Platform description' } });
     fireEvent.change(screen.getByLabelText('图标（Emoji 或图片地址）'), { target: { value: '🧠' } });
@@ -628,6 +635,7 @@ describe('AdminAppsTab', () => {
       const body = JSON.parse(init.body as string) as Record<string, unknown>;
       expect(body).toEqual({
         enabled: true,
+        supports_images: true,
         name: 'Renamed App',
         description: 'Platform description',
         icon: '🧠',

@@ -133,6 +133,7 @@ describe('Admin Routes', () => {
     expect(created.description).toBe('Upstream desc');
     expect(created.icon).toBe('🤖');
     expect(created.requires_new_conversation_inputs).toBe(true);
+    expect(created.supports_images).toBe(false);
 
     // Verify upstream endpoints were called (metadata + icon refresh /site)
     expect(fetchMock).toHaveBeenCalledTimes(4);
@@ -270,6 +271,7 @@ describe('Admin Routes', () => {
       headers: { Authorization: `Bearer ${token}` },
       payload: {
         enabled: false,
+        supports_images: true,
         name: 'Platform Name',
         description: 'Platform description',
         icon: '🧠',
@@ -287,8 +289,9 @@ describe('Admin Routes', () => {
       icon_source: string;
       api_key: string;
       enabled: boolean;
+      supports_images: boolean;
     }>(
-      'SELECT name, description, icon, icon_type, tags, icon_source, api_key, enabled FROM yiai_apps WHERE id = $1',
+      'SELECT name, description, icon, icon_type, tags, icon_source, api_key, enabled, supports_images FROM yiai_apps WHERE id = $1',
       [appId]
     );
     expect(dbResult.rows[0]).toMatchObject({
@@ -300,6 +303,7 @@ describe('Admin Routes', () => {
       icon_source: 'platform',
       api_key: 'initial-key',
       enabled: false,
+      supports_images: true,
     });
   });
 
@@ -374,7 +378,12 @@ describe('Admin Routes', () => {
   it('syncs existing app metadata without exposing api_key', async () => {
     const app = await buildApp(pool);
     await createTestUser(pool, 'admin_user', 'admin', 'testpass');
-    const appId = await createTestApp(pool, { slug: 'sync-app', name: 'Old Name', api_key: 'secret-key' });
+    const appId = await createTestApp(pool, {
+      slug: 'sync-app',
+      name: 'Old Name',
+      api_key: 'secret-key',
+      supports_images: true,
+    });
 
     fetchMock
       .mockResolvedValueOnce(new Response(JSON.stringify({ name: 'Synced Name', tags: ['医学', '养生'] })))
@@ -398,6 +407,13 @@ describe('Admin Routes', () => {
     expect(synced.description).toBe('Synced desc');
     expect(synced.icon).toBe('🔄');
     expect(synced.tags).toEqual(['医学', '养生']);
+    expect(synced.supports_images).toBe(true);
+
+    const dbResult = await pool.query<{ supports_images: boolean }>(
+      'SELECT supports_images FROM yiai_apps WHERE id = $1',
+      [appId]
+    );
+    expect(dbResult.rows[0].supports_images).toBe(true);
   });
 
   it('sync updates requires_new_conversation_inputs from false to true', async () => {

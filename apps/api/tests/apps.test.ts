@@ -65,6 +65,7 @@ describe('App Routes', () => {
       icon: '🔮',
       tags: ['国学'],
       sort_order: 1,
+      supports_images: true,
       requires_new_conversation_inputs: false,
     });
     await createTestApp(pool, {
@@ -146,12 +147,14 @@ describe('App Routes', () => {
     expect(zhouyi?.icon_type).toBe('emoji');
     expect(zhouyi?.icon_url).toBeNull();
     expect(zhouyi?.tags).toEqual(['国学']);
+    expect(zhouyi?.supports_images).toBe(true);
 
     const dunjiazi = body.find((a) => a.slug === 'dunjiazi');
     expect(dunjiazi?.name).toBe('遁甲子');
     expect(dunjiazi?.description).toBeNull();
     expect(dunjiazi?.icon).toBeNull();
     expect(dunjiazi?.icon_type).toBeNull();
+    expect(dunjiazi?.supports_images).toBe(false);
   });
 
   it('returns local icon_url for cached image-type apps without calling upstream', async () => {
@@ -696,6 +699,49 @@ describe('App Routes', () => {
     expect(chatResponse.statusCode).toBe(400);
     const chatBody = JSON.parse(chatResponse.body) as { error: string };
     expect(chatBody.error).toContain('姓名');
+  });
+
+  it('rejects image uploads for an app without image support before calling upstream', async () => {
+    const app = await buildTestApp(pool);
+    const token = await loginUser(app, 'test_user', 'testpass');
+    const boundary = '----FormBoundaryDisabledImage';
+    const body = buildMultipartBody(
+      [{ name: 'file', filename: 'image.png', contentType: 'image/png', data: Buffer.from('fake-image') }],
+      boundary
+    );
+
+    const response = await app.inject({
+      method: 'POST',
+      url: '/api/apps/dunjiazi/files',
+      headers: {
+        Authorization: `Bearer ${token}`,
+        'Content-Type': `multipart/form-data; boundary=${boundary}`,
+      },
+      payload: body,
+    });
+
+    expect(response.statusCode).toBe(400);
+    expect(JSON.parse(response.body)).toEqual({ error: '此应用未开启图片支持' });
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it('rejects chat images for an app without image support before calling upstream', async () => {
+    const app = await buildTestApp(pool);
+    const token = await loginUser(app, 'test_user', 'testpass');
+
+    const response = await app.inject({
+      method: 'POST',
+      url: '/api/apps/dunjiazi/chat',
+      headers: { Authorization: `Bearer ${token}` },
+      payload: {
+        query: 'describe image',
+        files: [{ type: 'image', transfer_method: 'local_file', upload_file_id: 'file-1' }],
+      },
+    });
+
+    expect(response.statusCode).toBe(400);
+    expect(JSON.parse(response.body)).toEqual({ error: '此应用未开启图片支持' });
+    expect(fetchMock).not.toHaveBeenCalled();
   });
 
   it('rejects non-image file uploads', async () => {

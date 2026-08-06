@@ -28,6 +28,7 @@ interface CreateAppBody {
   api_base_url?: string;
   api_key?: string;
   enabled?: boolean;
+  supports_images?: boolean;
   agent_input_form?: unknown;
 }
 
@@ -37,6 +38,7 @@ interface UpdateAppSettingsBody {
   description?: string;
   icon?: string;
   tags?: string[];
+  supports_images?: boolean;
   agent_input_form?: unknown;
 }
 
@@ -59,6 +61,7 @@ interface AdminAppRow {
   api_base_url: string;
   api_key: string;
   enabled: boolean;
+  supports_images: boolean;
   sort_order: number;
   requires_new_conversation_inputs: boolean;
   agent_input_form: UserInputFormField[];
@@ -70,7 +73,7 @@ interface AdminAppRow {
 }
 
 const ADMIN_APP_COLUMNS = `id, slug, name, description, icon, icon_type, icon_background,
-  api_base_url, api_key, enabled, sort_order, app_type, requires_new_conversation_inputs, agent_input_form,
+  api_base_url, api_key, enabled, supports_images, sort_order, app_type, requires_new_conversation_inputs, agent_input_form,
   created_at, updated_at, icon_cache_filename, icon_cache_content_type, icon_cached_at, tags, icon_source`;
 
 function assertAdmin(request: FastifyRequest, reply: FastifyReply): boolean {
@@ -440,6 +443,9 @@ export function adminRoutes(fastify: FastifyInstance, options: { pool: Pool }) {
     if (!isNonEmptyString(body.api_key)) {
       return reply.status(400).send({ error: 'YIAI API Key 不能为空' });
     }
+    if (body.supports_images !== undefined && typeof body.supports_images !== 'boolean') {
+      return reply.status(400).send({ error: '是否支持图片格式错误' });
+    }
     const duplicate = await findConnectionDuplicate(pool, apiBaseUrl, body.api_key);
     if (duplicate) {
       return reply.status(409).send({ error: `这套 YIAI 连接已经绑定到应用「${duplicate.slug}」，请编辑该应用，不要重复新增` });
@@ -456,8 +462,8 @@ export function adminRoutes(fastify: FastifyInstance, options: { pool: Pool }) {
     try {
       const result = await pool.query<AdminAppRow>(
         `INSERT INTO yiai_apps
-          (slug, name, description, icon, icon_type, icon_background, tags, icon_source, api_base_url, api_key, enabled, sort_order, app_type, requires_new_conversation_inputs, agent_input_form)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, 'yiai', $8, $9, $10, $11, $12, $13, $14)
+          (slug, name, description, icon, icon_type, icon_background, tags, icon_source, api_base_url, api_key, enabled, supports_images, sort_order, app_type, requires_new_conversation_inputs, agent_input_form)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, 'yiai', $8, $9, $10, $11, $12, $13, $14, $15)
          RETURNING ${ADMIN_APP_COLUMNS}`,
         [
           slug,
@@ -470,6 +476,7 @@ export function adminRoutes(fastify: FastifyInstance, options: { pool: Pool }) {
           apiBaseUrl,
           body.api_key,
           body.enabled ?? true,
+          body.supports_images ?? false,
           0,
           appType,
           appType === 'agent' ? agentInputForm.length > 0 : metadata.requires_new_conversation_inputs,
@@ -542,12 +549,16 @@ export function adminRoutes(fastify: FastifyInstance, options: { pool: Pool }) {
       body.description === undefined &&
       body.icon === undefined &&
       body.tags === undefined &&
+      body.supports_images === undefined &&
       body.agent_input_form === undefined
     ) {
       return reply.status(400).send({ error: '请至少修改一项平台设置' });
     }
     if (body.enabled !== undefined && typeof body.enabled !== 'boolean') {
       return reply.status(400).send({ error: '启用状态格式错误' });
+    }
+    if (body.supports_images !== undefined && typeof body.supports_images !== 'boolean') {
+      return reply.status(400).send({ error: '是否支持图片格式错误' });
     }
     if (body.name !== undefined && !isNonEmptyString(body.name)) {
       return reply.status(400).send({ error: '应用名称不能为空' });
@@ -594,6 +605,7 @@ export function adminRoutes(fastify: FastifyInstance, options: { pool: Pool }) {
     };
 
     if (body.enabled !== undefined) addValue('enabled', body.enabled);
+    if (body.supports_images !== undefined) addValue('supports_images', body.supports_images);
     if (name !== undefined) addValue('name', name);
     if (description !== undefined) addValue('description', description);
     if (tags !== undefined) addValue('tags', tags);

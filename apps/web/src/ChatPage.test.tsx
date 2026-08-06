@@ -503,6 +503,34 @@ describe('ChatPage latest conversation inputs restore', () => {
     });
   });
 
+  it('hides the image picker when the app does not support images', async () => {
+    fetchMock.mockImplementation((input) => {
+      const url = typeof input === 'string' ? input : input.url;
+      if (url.endsWith('/bootstrap')) {
+        return Promise.resolve(new Response(JSON.stringify({
+          app: { id: 'text-only-app', slug: 'text-only-app', name: 'Text only', description: null, icon: null, sort_order: 1, supports_images: false, requires_new_conversation_inputs: false, created_at: '', updated_at: '' },
+          opening_statement: null, suggested_questions: [], user_input_form: null,
+        })));
+      }
+      if (url.endsWith('/conversations')) return Promise.resolve(new Response(JSON.stringify([])));
+      return Promise.reject(new Error(`Unexpected fetch: ${url}`));
+    });
+
+    const { container } = render(
+      <ChatPage
+        slug="text-only-app"
+        user={{ id: 'user-1', username: 'tester', role: 'user' }}
+        account={{ gift_tokens: 100, recharge_tokens: 50, daily_gift_amount: 10, gift_tokens_max: 200, last_gift_date: null }}
+        onBack={() => {}}
+        onLogout={() => {}}
+      />
+    );
+
+    await screen.findByPlaceholderText('输入问题...');
+    expect(screen.queryByRole('button', { name: '图片' })).not.toBeInTheDocument();
+    expect(container.querySelector('input[type="file"]')).toBeNull();
+  });
+
   it('keeps image drafts local and uploads them only when the user sends', async () => {
     const createObjectURL = vi.fn((file: Blob) => `blob:${(file as File).name}`);
     const revokeObjectURL = vi.fn();
@@ -513,7 +541,7 @@ describe('ChatPage latest conversation inputs restore', () => {
       const url = typeof input === 'string' ? input : input.url;
       if (url.endsWith('/bootstrap')) {
         return Promise.resolve(new Response(JSON.stringify({
-          app: { id: 'dify-image-app', slug: 'dify-image-app', name: 'Dify 图片识别', description: null, icon: null, sort_order: 1, requires_new_conversation_inputs: false, created_at: '', updated_at: '' },
+          app: { id: 'dify-image-app', slug: 'dify-image-app', name: 'Dify 图片识别', description: null, icon: null, sort_order: 1, supports_images: true, requires_new_conversation_inputs: false, created_at: '', updated_at: '' },
           opening_statement: null, suggested_questions: [], user_input_form: null,
         })));
       }
@@ -578,7 +606,7 @@ describe('ChatPage latest conversation inputs restore', () => {
       const url = typeof input === 'string' ? input : input.url;
       if (url.endsWith('/bootstrap')) {
         return Promise.resolve(new Response(JSON.stringify({
-          app: { id: 'draft-image-app', slug: 'draft-image-app', name: '图片草稿测试', description: null, icon: null, sort_order: 1, requires_new_conversation_inputs: false, created_at: '', updated_at: '' },
+          app: { id: 'draft-image-app', slug: 'draft-image-app', name: '图片草稿测试', description: null, icon: null, sort_order: 1, supports_images: true, requires_new_conversation_inputs: false, created_at: '', updated_at: '' },
           opening_statement: null, suggested_questions: [], user_input_form: null,
         })));
       }

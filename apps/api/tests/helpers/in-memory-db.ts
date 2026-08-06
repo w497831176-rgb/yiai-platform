@@ -41,6 +41,7 @@ export async function createInMemoryPool(): Promise<Pool> {
     '008_add_yiai_app_types.sql',
     '009_create_hidden_conversations.sql',
     '010_create_conversation_display_names.sql',
+    '011_add_yiai_app_image_support.sql',
   ];
 
   for (const file of files) {
@@ -83,6 +84,7 @@ export async function createTestApp(
     api_base_url: string;
     api_key: string;
     enabled: boolean;
+    supports_images: boolean;
     sort_order: number;
     requires_new_conversation_inputs: boolean;
     agent_input_form: unknown[];
@@ -98,8 +100,8 @@ export async function createTestApp(
   const icon_cache_content_type = overrides.icon_cache_content_type ?? null;
   const icon_cached_at = overrides.icon_cached_at ?? null;
   const result = await pool.query<{ id: string }>(
-    `INSERT INTO yiai_apps (slug, name, description, icon, icon_type, icon_background, tags, icon_source, api_base_url, api_key, enabled, sort_order, app_type, requires_new_conversation_inputs, agent_input_form, icon_cache_filename, icon_cache_content_type, icon_cached_at)
-     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18)
+    `INSERT INTO yiai_apps (slug, name, description, icon, icon_type, icon_background, tags, icon_source, api_base_url, api_key, enabled, supports_images, sort_order, app_type, requires_new_conversation_inputs, agent_input_form, icon_cache_filename, icon_cache_content_type, icon_cached_at)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19)
      RETURNING id`,
     [
       slug,
@@ -113,6 +115,7 @@ export async function createTestApp(
       overrides.api_base_url ?? 'https://yiai.example.com/v1',
       overrides.api_key ?? 'test-key',
       overrides.enabled ?? true,
+      overrides.supports_images ?? false,
       overrides.sort_order ?? 1,
       overrides.app_type ?? 'chatflow',
       overrides.requires_new_conversation_inputs ?? false,

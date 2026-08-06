@@ -339,7 +339,7 @@ export async function findAppBySlug(pool: Pool, slug: string): Promise<DbApp | u
 
 export async function listEnabledApps(pool: Pool): Promise<YiaiApp[]> {
   const result = await pool.query<DbApp>(
-    `SELECT id, slug, app_type, name, description, icon, icon_type, icon_background, tags, sort_order,
+    `SELECT id, slug, app_type, name, description, icon, icon_type, icon_background, tags, sort_order, supports_images,
             requires_new_conversation_inputs, created_at, updated_at,
             icon_cache_filename, icon_cached_at
      FROM yiai_apps
@@ -415,6 +415,7 @@ export async function bootstrapApp(pool: Pool, slug: string): Promise<AppBootstr
       icon_background: app.icon_background,
       tags: app.tags ?? [],
       sort_order: app.sort_order,
+      supports_images: app.supports_images,
       requires_new_conversation_inputs: app.requires_new_conversation_inputs,
       created_at: app.created_at,
       updated_at: app.updated_at,
@@ -688,6 +689,7 @@ export function toSafeApp(
     icon_background: app.icon_background,
     tags: app.tags ?? [],
     sort_order: app.sort_order,
+    supports_images: app.supports_images,
     requires_new_conversation_inputs: app.requires_new_conversation_inputs,
     created_at: app.created_at,
     updated_at: app.updated_at,

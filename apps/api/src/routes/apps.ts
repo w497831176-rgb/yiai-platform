@@ -205,6 +205,18 @@ export function appRoutes(fastify: FastifyInstance, options: { pool: Pool }): vo
       return await reply.status(401).send({ error: '未登录' });
     }
 
+    const appResult = await pool.query<{ supports_images: boolean }>(
+      'SELECT supports_images FROM yiai_apps WHERE slug = $1 AND enabled = true',
+      [slug]
+    );
+    const app = appResult.rows.at(0);
+    if (!app) {
+      return await reply.status(404).send({ error: `应用不存在: ${slug}` });
+    }
+    if (!app.supports_images) {
+      return await reply.status(400).send({ error: '此应用未开启图片支持' });
+    }
+
     let fileData;
     try {
       fileData = await request.file();
@@ -274,15 +286,20 @@ export function appRoutes(fastify: FastifyInstance, options: { pool: Pool }): vo
     }
 
     let upstreamResponse: Response;
-    let appRow: { id: string; requires_new_conversation_inputs: boolean } | undefined;
+    let appRow: { id: string; requires_new_conversation_inputs: boolean; supports_images: boolean } | undefined;
     try {
       const appResult = await pool.query<{
         id: string;
         requires_new_conversation_inputs: boolean;
-      }>('SELECT id, requires_new_conversation_inputs FROM yiai_apps WHERE slug = $1 AND enabled = true', [slug]);
+        supports_images: boolean;
+      }>('SELECT id, requires_new_conversation_inputs, supports_images FROM yiai_apps WHERE slug = $1 AND enabled = true', [slug]);
       appRow = appResult.rows.at(0);
       if (!appRow) {
         return await reply.status(404).send({ error: `应用不存在: ${slug}` });
+      }
+
+      if (hasFiles && !appRow.supports_images) {
+        return await reply.status(400).send({ error: '此应用未开启图片支持' });
       }
 
       if (appRow.requires_new_conversation_inputs && !body.conversation_id) {

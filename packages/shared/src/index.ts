@@ -58,6 +58,7 @@ export interface YiaiApp {
   icon_background: string | null;
   tags?: string[];
   sort_order: number;
+  supports_images: boolean;
   requires_new_conversation_inputs: boolean;
   created_at: string;
   updated_at: string;
