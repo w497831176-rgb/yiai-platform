@@ -597,6 +597,99 @@ describe('ChatPage latest conversation inputs restore', () => {
     });
   });
 
+  it('keeps images larger than 200KB out of local drafts', async () => {
+    const createObjectURL = vi.fn((file: Blob) => 'blob:' + (file as File).name);
+    vi.stubGlobal('URL', { createObjectURL, revokeObjectURL: vi.fn() });
+
+    fetchMock.mockImplementation((input) => {
+      const url = typeof input === 'string' ? input : input.url;
+      if (url.endsWith('/bootstrap')) {
+        return Promise.resolve(new Response(JSON.stringify({
+          app: { id: 'draft-size-app', slug: 'draft-size-app', name: '图片大小测试', description: null, icon: null, sort_order: 1, supports_images: true, requires_new_conversation_inputs: false, created_at: '', updated_at: '' },
+          opening_statement: null, suggested_questions: [], user_input_form: null,
+        })));
+      }
+      if (url.endsWith('/conversations')) return Promise.resolve(new Response(JSON.stringify([])));
+      return Promise.reject(new Error('Unexpected fetch: ' + url));
+    });
+
+    const { container } = render(
+      <ChatPage
+        slug="draft-size-app"
+        user={{ id: 'user-1', username: 'tester', role: 'user' }}
+        account={{ gift_tokens: 100, recharge_tokens: 50, daily_gift_amount: 10, gift_tokens_max: 200, last_gift_date: null }}
+        onBack={() => {}}
+        onLogout={() => {}}
+      />
+    );
+
+    await screen.findByPlaceholderText('输入问题...');
+    const fileInput = container.querySelector('input[type="file"]');
+    if (!(fileInput instanceof HTMLInputElement)) {
+      throw new Error('image input is missing');
+    }
+    fireEvent.change(fileInput, {
+      target: {
+        files: [new File([new Uint8Array(200 * 1024 + 1)], 'too-large.png', { type: 'image/png' })],
+      },
+    });
+
+    expect(await screen.findByText('单张图片不能超过 200KB')).toBeInTheDocument();
+    expect(screen.queryByText('已选 1/10 张图片')).not.toBeInTheDocument();
+    expect(fetchMock.mock.calls.some(([url]) => (typeof url === 'string' ? url : url.url).endsWith('/files'))).toBe(false);
+  });
+
+  it('shows a readable error when the upload endpoint returns HTML', async () => {
+    const createObjectURL = vi.fn((file: Blob) => 'blob:' + (file as File).name);
+    vi.stubGlobal('URL', { createObjectURL, revokeObjectURL: vi.fn() });
+
+    fetchMock.mockImplementation((input) => {
+      const url = typeof input === 'string' ? input : input.url;
+      if (url.endsWith('/bootstrap')) {
+        return Promise.resolve(new Response(JSON.stringify({
+          app: { id: 'html-upload-app', slug: 'html-upload-app', name: '上传错误测试', description: null, icon: null, sort_order: 1, supports_images: true, requires_new_conversation_inputs: false, created_at: '', updated_at: '' },
+          opening_statement: null, suggested_questions: [], user_input_form: null,
+        })));
+      }
+      if (url.endsWith('/conversations')) return Promise.resolve(new Response(JSON.stringify([])));
+      if (url.endsWith('/files')) {
+        return Promise.resolve(new Response('<html><h1>413 Request Entity Too Large</h1></html>', {
+          status: 413,
+          headers: { 'Content-Type': 'text/html' },
+        }));
+      }
+      return Promise.reject(new Error('Unexpected fetch: ' + url));
+    });
+
+    const { container } = render(
+      <ChatPage
+        slug="html-upload-app"
+        user={{ id: 'user-1', username: 'tester', role: 'user' }}
+        account={{ gift_tokens: 100, recharge_tokens: 50, daily_gift_amount: 10, gift_tokens_max: 200, last_gift_date: null }}
+        onBack={() => {}}
+        onLogout={() => {}}
+      />
+    );
+
+    await screen.findByPlaceholderText('输入问题...');
+    const fileInput = container.querySelector('input[type="file"]');
+    if (!(fileInput instanceof HTMLInputElement)) {
+      throw new Error('image input is missing');
+    }
+    fireEvent.change(fileInput, {
+      target: {
+        files: [new File(['small-image'], 'small.png', { type: 'image/png' })],
+      },
+    });
+    await screen.findByText('已选 1/10 张图片');
+    fireEvent.click(screen.getByRole('button', { name: '发送' }));
+
+    expect(await screen.findByText('单张图片不能超过 200KB')).toBeInTheDocument();
+    expect(screen.queryByText(/Unexpected token/)).not.toBeInTheDocument();
+    expect(screen.getByText('已选 1/10 张图片')).toBeInTheDocument();
+    expect(fetchMock.mock.calls.some(([url]) => (typeof url === 'string' ? url : url.url).endsWith('/chat'))).toBe(false);
+  });
+
   it('limits local image drafts to ten and lets the user remove one before sending', async () => {
     const createObjectURL = vi.fn((file: Blob) => `blob:${(file as File).name}`);
     const revokeObjectURL = vi.fn();

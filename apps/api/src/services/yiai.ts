@@ -626,7 +626,12 @@ export async function uploadFileToUpstream(
     throw new YiaiUpstreamError(`文件上传失败：上游返回 ${String(response.status)} ${response.statusText}`);
   }
 
-  const data = (await response.json()) as Record<string, unknown>;
+  let data: Record<string, unknown>;
+  try {
+    data = (await response.json()) as Record<string, unknown>;
+  } catch {
+    throw new YiaiUpstreamError('文件上传失败：上游返回无效数据');
+  }
   const id = typeof data.id === 'string' ? data.id : '';
   if (!id) {
     throw new YiaiUpstreamError('文件上传失败：上游未返回文件 ID');

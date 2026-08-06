@@ -29,7 +29,7 @@ interface RenameConversationBody {
   name?: unknown;
 }
 
-const TEN_MB = 10 * 1024 * 1024;
+const MAX_IMAGE_BYTES = 200 * 1024;
 const MAX_CHAT_FILES = 10;
 
 function validateRequiredInputs(bootstrap: AppBootstrapResult, inputs: Record<string, unknown> | undefined): string | null {
@@ -56,7 +56,7 @@ export function appRoutes(fastify: FastifyInstance, options: { pool: Pool }): vo
 
   void fastify.register(multipart, {
     limits: {
-      fileSize: 100 * 1024 * 1024, // 让插件不要提前截断，由业务层校验 10MB
+      fileSize: MAX_IMAGE_BYTES,
     },
   });
   fastify.addHook('preHandler', authenticate);
@@ -223,7 +223,7 @@ export function appRoutes(fastify: FastifyInstance, options: { pool: Pool }): vo
     } catch (err) {
       request.log.error(err);
       if (err instanceof Error && (err.name === 'RequestFileTooLargeError' || /too large/i.test(err.message))) {
-        return await reply.status(400).send({ error: '图片大小超过 10MB' });
+        return await reply.status(400).send({ error: '单张图片不能超过 200KB' });
       }
       return await reply.status(400).send({ error: '请求格式错误' });
     }
@@ -241,11 +241,14 @@ export function appRoutes(fastify: FastifyInstance, options: { pool: Pool }): vo
       buffer = await fileData.toBuffer();
     } catch (err) {
       request.log.error(err);
+      if (err instanceof Error && (err.name === 'RequestFileTooLargeError' || /too large/i.test(err.message))) {
+        return await reply.status(400).send({ error: '单张图片不能超过 200KB' });
+      }
       return await reply.status(400).send({ error: '读取图片失败' });
     }
 
-    if (buffer.length > TEN_MB) {
-      return await reply.status(400).send({ error: '图片大小超过 10MB' });
+    if (buffer.length > MAX_IMAGE_BYTES) {
+      return await reply.status(400).send({ error: '单张图片不能超过 200KB' });
     }
 
     try {

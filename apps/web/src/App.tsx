@@ -161,6 +161,8 @@ type View =
 
 const TOKEN_KEY = 'yiai_token';
 const MAX_DRAFT_IMAGES = 10;
+const MAX_DRAFT_IMAGE_BYTES = 200 * 1024;
+const MAX_DRAFT_IMAGE_SIZE_LABEL = '200KB';
 
 function formatMessageMeta(msg: ChatMessage): string {
   const parts: string[] = [];
@@ -964,7 +966,23 @@ export function ChatPage({
       headers,
       body: formData,
     });
-    const data = (await response.json()) as { error?: string; id?: string; type?: string; url?: string };
+    const responseText = await response.text();
+    let data = {} as { error?: string; id?: string; type?: string; url?: string };
+    if (responseText.trim() !== '') {
+      try {
+        data = JSON.parse(responseText) as { error?: string; id?: string; type?: string; url?: string };
+      } catch {
+        if (response.ok) {
+          throw new Error('上传返回数据格式错误，请检查应用接口配置');
+        }
+      }
+    }
+    if (!response.ok && !data.error) {
+      if (response.status === 413) {
+        throw new Error('单张图片不能超过 ' + MAX_DRAFT_IMAGE_SIZE_LABEL);
+      }
+      throw new Error('图片上传失败（服务器响应异常，HTTP ' + String(response.status) + '）');
+    }
     if (!response.ok) {
       throw new Error(data.error ?? '上传失败');
     }
@@ -1001,8 +1019,10 @@ export function ChatPage({
     }
 
     const imageFiles = selectedFiles.filter((file) => file.type.startsWith('image/'));
+    const oversizedFiles = imageFiles.filter((file) => file.size > MAX_DRAFT_IMAGE_BYTES);
+    const filesWithinSizeLimit = imageFiles.filter((file) => file.size <= MAX_DRAFT_IMAGE_BYTES);
     const available = Math.max(0, MAX_DRAFT_IMAGES - pendingImages.length);
-    const acceptedFiles = imageFiles.slice(0, available);
+    const acceptedFiles = filesWithinSizeLimit.slice(0, available);
 
     if (acceptedFiles.length > 0) {
       const timestamp = Date.now();
@@ -1018,7 +1038,9 @@ export function ChatPage({
 
     if (imageFiles.length !== selectedFiles.length) {
       setError('仅支持图片文件');
-    } else if (acceptedFiles.length !== imageFiles.length) {
+    } else if (oversizedFiles.length > 0) {
+      setError('单张图片不能超过 ' + MAX_DRAFT_IMAGE_SIZE_LABEL);
+    } else if (acceptedFiles.length !== filesWithinSizeLimit.length) {
       setError(`一次最多选择 ${String(MAX_DRAFT_IMAGES)} 张图片`);
     } else {
       setError('');
@@ -1121,6 +1143,10 @@ export function ChatPage({
     }
     if (imageDrafts.length > 0 && !supportsImages) {
       setError('此应用暂不支持图片');
+      return;
+    }
+    if (imageDrafts.some((draft) => draft.file.size > MAX_DRAFT_IMAGE_BYTES)) {
+      setError('单张图片不能超过 ' + MAX_DRAFT_IMAGE_SIZE_LABEL);
       return;
     }
     if (isBalanceInsufficient) {

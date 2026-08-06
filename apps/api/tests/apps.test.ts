@@ -774,7 +774,7 @@ describe('App Routes', () => {
     const token = await loginUser(app, 'test_user', 'testpass');
     const boundary = '----FormBoundary';
     const body = buildMultipartBody(
-      [{ name: 'file', filename: 'big.png', contentType: 'image/png', data: Buffer.alloc(10 * 1024 * 1024 + 1) }],
+      [{ name: 'file', filename: 'big.png', contentType: 'image/png', data: Buffer.alloc(200 * 1024 + 1) }],
       boundary
     );
 
@@ -790,7 +790,7 @@ describe('App Routes', () => {
 
     expect(response.statusCode).toBe(400);
     const result = JSON.parse(response.body) as { error: string };
-    expect(result.error).toBe('图片大小超过 10MB');
+    expect(result.error).toBe('单张图片不能超过 200KB');
     expect(fetchMock).not.toHaveBeenCalled();
   });
 
@@ -803,7 +803,7 @@ describe('App Routes', () => {
     const token = await loginUser(app, 'test_user', 'testpass');
     const boundary = '----FormBoundary';
     const body = buildMultipartBody(
-      [{ name: 'file', filename: 'avatar.png', contentType: 'image/png', data: Buffer.from('fake-image') }],
+      [{ name: 'file', filename: 'avatar.png', contentType: 'image/png', data: Buffer.alloc(200 * 1024) }],
       boundary
     );
 
@@ -832,6 +832,36 @@ describe('App Routes', () => {
     const formData = (init as { body: FormData }).body;
     expect(formData.get('user')).toMatch(/^yiai-platform-/);
     expect(formData.get('file')).toBeInstanceOf(Blob);
+  });
+
+  it('returns a controlled error when the upstream file endpoint returns HTML', async () => {
+    fetchMock.mockResolvedValueOnce(
+      new Response('<html><h1>Bad Gateway</h1></html>', {
+        status: 200,
+        headers: { 'Content-Type': 'text/html' },
+      })
+    );
+
+    const app = await buildTestApp(pool);
+    const token = await loginUser(app, 'test_user', 'testpass');
+    const boundary = '----FormBoundary';
+    const body = buildMultipartBody(
+      [{ name: 'file', filename: 'avatar.png', contentType: 'image/png', data: Buffer.from('fake-image') }],
+      boundary
+    );
+
+    const response = await app.inject({
+      method: 'POST',
+      url: '/api/apps/zhouyi-divination/files',
+      headers: {
+        Authorization: 'Bearer ' + token,
+        'Content-Type': 'multipart/form-data; boundary=' + boundary,
+      },
+      payload: body,
+    });
+
+    expect(response.statusCode).toBe(502);
+    expect(JSON.parse(response.body)).toEqual({ error: '文件上传失败：上游返回无效数据' });
   });
 
   it('hides a conversation locally without calling YIAI deletion APIs', async () => {
