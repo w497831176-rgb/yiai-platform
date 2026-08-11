@@ -71,6 +71,7 @@ services:
       YIAI_PLATFORM_JWT_SECRET: ${YIAI_PLATFORM_JWT_SECRET:?YIAI_PLATFORM_JWT_SECRET is required}
     volumes:
       - ${YIAI_PLATFORM_DATA_ROOT:-/srv/yiai-platform/data}/icon-cache:/app/data/icon-cache
+      - ${YIAI_PLATFORM_DATA_ROOT:-/srv/yiai-platform/data}/feedback-uploads:/app/data/feedback-uploads
     depends_on:
       db:
         condition: service_healthy

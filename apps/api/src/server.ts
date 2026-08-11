@@ -8,6 +8,7 @@ import { appRoutes } from './routes/apps.js';
 import { appIconRoutes } from './routes/app-icons.js';
 import { tokenAccountRoutes } from './routes/token-account.js';
 import { adminRoutes } from './routes/admin.js';
+import { feedbackRoutes } from './routes/feedback.js';
 import { scheduleDailyIconRefresh } from './services/icon-cache.js';
 
 export async function buildApp(): Promise<FastifyInstance> {
@@ -25,6 +26,7 @@ export async function buildApp(): Promise<FastifyInstance> {
   app.register(appIconRoutes, { prefix: '/api/app-icons', pool });
   app.register(tokenAccountRoutes, { prefix: '/api', pool });
   app.register(adminRoutes, { prefix: '/api', pool });
+  app.register(feedbackRoutes, { prefix: '/api', pool });
 
   return app;
 }

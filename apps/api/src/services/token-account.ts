@@ -1,7 +1,7 @@
 import type { Pool, PoolClient } from 'pg';
 
-export const DAILY_GIFT_AMOUNT = 50_000;
-export const MAX_GIFT_TOKENS = 100_000;
+export const LOGIN_STREAK_REWARD_BASE = 50_000;
+export const MAX_GIFT_TOKENS = 1_000_000;
 const TIMEZONE = 'Asia/Shanghai';
 
 export interface TokenAccount {
@@ -9,6 +9,8 @@ export interface TokenAccount {
   gift_tokens: number;
   recharge_tokens: number;
   last_gift_date: Date | null;
+  last_login_reward_date: Date | null;
+  login_streak_days: number;
   created_at: Date;
   updated_at: Date;
 }
@@ -18,7 +20,7 @@ export interface TokenLedgerEntry {
   user_id: string;
   delta_tokens: number;
   bucket: 'gift' | 'recharge';
-  entry_type: 'daily_gift' | 'admin_recharge' | 'usage';
+  entry_type: 'daily_gift' | 'login_streak_gift' | 'admin_recharge' | 'usage';
   usage_record_id: string | null;
   created_by_user_id: string | null;
   note: string | null;
@@ -40,6 +42,7 @@ function normalizeTokenAccount(row: TokenAccount): TokenAccount {
     ...row,
     gift_tokens: toNumber(row.gift_tokens),
     recharge_tokens: toNumber(row.recharge_tokens),
+    login_streak_days: toNumber(row.login_streak_days),
   };
 }
 
@@ -51,12 +54,18 @@ function normalizeLedgerEntry(row: TokenLedgerEntry): TokenLedgerEntry {
 }
 
 export function getShanghaiDateString(date: Date): string {
-  return new Intl.DateTimeFormat('en-CA', {
+  const parts = new Intl.DateTimeFormat('en-US', {
     timeZone: TIMEZONE,
     year: 'numeric',
     month: '2-digit',
     day: '2-digit',
-  }).format(date);
+  }).formatToParts(date);
+  const values = Object.fromEntries(
+    parts
+      .filter((part) => part.type !== 'literal')
+      .map((part) => [part.type, part.value])
+  );
+  return `${values.year}-${values.month}-${values.day}`;
 }
 
 function toDateString(value: Date | string | null): string | null {
@@ -79,40 +88,6 @@ function addCalendarDays(dateStr: string, days: number): string {
   return getShanghaiDateString(new Date(date.getTime() + days * 86_400_000));
 }
 
-function diffCalendarDays(start: Date | string | null, end: Date | string): number {
-  if (start === null) {
-    return 1;
-  }
-  const startStr = toDateString(start);
-  if (startStr === null) {
-    return 1;
-  }
-  const startDate = parseDateAtMidnightUTC(startStr);
-  const endStr = toDateString(end);
-  if (endStr === null) {
-    return 0;
-  }
-  const endDate = parseDateAtMidnightUTC(endStr);
-  const diff = Math.floor((endDate.getTime() - startDate.getTime()) / 86_400_000);
-  return Math.max(0, diff);
-}
-
-function buildGrantDates(lastGiftDate: Date | string | null, todayStr: string): string[] {
-  if (lastGiftDate === null) {
-    return [todayStr];
-  }
-  const lastStr = toDateString(lastGiftDate);
-  if (lastStr === null) {
-    return [todayStr];
-  }
-  const days = diffCalendarDays(lastStr, todayStr);
-  const dates: string[] = [];
-  for (let d = 1; d <= days; d++) {
-    dates.push(addCalendarDays(lastStr, d));
-  }
-  return dates;
-}
-
 export async function getOrCreateTokenAccount(pool: Pool, userId: string): Promise<TokenAccount> {
   const result = await pool.query<TokenAccount>(
     `
@@ -126,13 +101,21 @@ export async function getOrCreateTokenAccount(pool: Pool, userId: string): Promi
   return normalizeTokenAccount(result.rows[0]);
 }
 
-export async function ensureDailyGift(pool: Pool, userId: string, now = new Date()): Promise<TokenAccount> {
-  const account = await getOrCreateTokenAccount(pool, userId);
-  const todayStr = getShanghaiDateString(now);
+export interface LoginStreakReward {
+  account: TokenAccount;
+  streak_days: number;
+  reward_tokens: number;
+  granted_tokens: number;
+}
 
-  if (toDateString(account.last_gift_date) === todayStr) {
-    return account;
-  }
+export async function awardLoginStreakReward(
+  pool: Pool,
+  userId: string,
+  now = new Date()
+): Promise<LoginStreakReward> {
+  await getOrCreateTokenAccount(pool, userId);
+  const todayStr = getShanghaiDateString(now);
+  const yesterdayStr = addCalendarDays(todayStr, -1);
 
   const client = await pool.connect();
   try {
@@ -148,42 +131,50 @@ export async function ensureDailyGift(pool: Pool, userId: string, now = new Date
     }
 
     const lockedAccount = normalizeTokenAccount(lockResult.rows[0]);
-    const lastGiftDate = lockedAccount.last_gift_date;
-    const grantDates = buildGrantDates(lastGiftDate, todayStr);
+    const lastLoginDate = toDateString(lockedAccount.last_login_reward_date);
+    if (lastLoginDate === todayStr || (lastLoginDate !== null && lastLoginDate > todayStr)) {
+      await client.query('COMMIT');
+      return {
+        account: lockedAccount,
+        streak_days: lockedAccount.login_streak_days,
+        reward_tokens: 0,
+        granted_tokens: 0,
+      };
+    }
 
-    let currentGift = lockedAccount.gift_tokens;
+    const streakDays = lastLoginDate === yesterdayStr ? lockedAccount.login_streak_days + 1 : 1;
+    const rewardTokens = LOGIN_STREAK_REWARD_BASE * streakDays;
+    const grantedTokens = Math.max(0, Math.min(rewardTokens, MAX_GIFT_TOKENS - lockedAccount.gift_tokens));
 
-    for (const grantDateStr of grantDates) {
-      const remainingCapacity = MAX_GIFT_TOKENS - currentGift;
-      if (remainingCapacity <= 0) {
-        break;
-      }
-      const delta = Math.min(DAILY_GIFT_AMOUNT, remainingCapacity);
-      currentGift += delta;
+    await client.query(
+      `UPDATE token_accounts
+       SET gift_tokens = gift_tokens + $2,
+           last_login_reward_date = $3,
+           login_streak_days = $4,
+           updated_at = NOW()
+       WHERE user_id = $1`,
+      [userId, grantedTokens, todayStr, streakDays]
+    );
 
-      await client.query(
-        'UPDATE token_accounts SET gift_tokens = gift_tokens + $2, updated_at = NOW() WHERE user_id = $1',
-        [userId, delta]
-      );
-
+    if (grantedTokens > 0) {
       await client.query(
         `
           INSERT INTO token_ledger_entries (user_id, delta_tokens, bucket, entry_type, note)
-          VALUES ($1, $2, 'gift', 'daily_gift', $3)
+          VALUES ($1, $2, 'gift', 'login_streak_gift', $3)
         `,
-        [userId, delta, `每日赠送额度（${grantDateStr}）`]
+        [userId, grantedTokens, `连续登录第 ${String(streakDays)} 天赠送额度（${todayStr}）`]
       );
     }
-
-    await client.query(
-      'UPDATE token_accounts SET last_gift_date = $2, updated_at = NOW() WHERE user_id = $1',
-      [userId, todayStr]
-    );
 
     await client.query('COMMIT');
 
     const refreshed = await pool.query<TokenAccount>('SELECT * FROM token_accounts WHERE user_id = $1', [userId]);
-    return normalizeTokenAccount(refreshed.rows[0]);
+    return {
+      account: normalizeTokenAccount(refreshed.rows[0]),
+      streak_days: streakDays,
+      reward_tokens: rewardTokens,
+      granted_tokens: grantedTokens,
+    };
   } catch (error) {
     await client.query('ROLLBACK');
     throw error;
@@ -281,8 +272,8 @@ export async function deductForUsage(
   );
 }
 
-export async function getTokenAccount(pool: Pool, userId: string, now = new Date()): Promise<TokenAccount> {
-  return ensureDailyGift(pool, userId, now);
+export async function getTokenAccount(pool: Pool, userId: string): Promise<TokenAccount> {
+  return getOrCreateTokenAccount(pool, userId);
 }
 
 export async function getLedgerEntries(pool: Pool, userId: string): Promise<TokenLedgerEntry[]> {

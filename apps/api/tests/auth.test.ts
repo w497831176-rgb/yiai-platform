@@ -39,7 +39,7 @@ describe('Authentication', () => {
     expect(body.token).toBeDefined();
 
     const account = await pool.query<{ gift_tokens: number }>('SELECT gift_tokens FROM token_accounts WHERE user_id = $1', [body.user.id]);
-    expect(account.rows[0].gift_tokens).toBe(50000);
+    expect(account.rows[0].gift_tokens).toBe(0);
   });
 
   it('rejects duplicate username with 409', async () => {
@@ -73,6 +73,11 @@ describe('Authentication', () => {
     const body = JSON.parse(response.body) as AuthResponse;
     expect(body.token).toBeDefined();
     expect(body.user.username).toBe('test_user');
+    expect(body.login_reward).toMatchObject({
+      streak_days: 1,
+      reward_tokens: 50000,
+      granted_tokens: 50000,
+    });
   });
 
   it('rejects login with wrong password', async () => {

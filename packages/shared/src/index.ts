@@ -27,6 +27,11 @@ export interface SafeUser {
 export interface AuthResponse {
   token: string;
   user: SafeUser;
+  login_reward?: {
+    streak_days: number;
+    reward_tokens: number;
+    granted_tokens: number;
+  };
 }
 
 export interface RegisterRequest {

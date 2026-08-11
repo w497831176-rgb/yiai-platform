@@ -15,9 +15,16 @@ interface User {
   role: 'user' | 'admin';
 }
 
+interface LoginReward {
+  streak_days: number;
+  reward_tokens: number;
+  granted_tokens: number;
+}
+
 interface AuthResponse {
   token: string;
   user: User;
+  login_reward?: LoginReward;
 }
 
 interface YiaiApp {
@@ -105,15 +112,16 @@ interface PendingImageDraft {
 interface TokenAccount {
   gift_tokens: number;
   recharge_tokens: number;
-  daily_gift_amount: number;
+  login_reward_base: number;
   gift_tokens_max: number;
-  last_gift_date: string | null;
+  login_streak_days: number;
+  last_login_reward_date: string | null;
 }
 
 interface LedgerEntry {
   id: string;
   created_at: string;
-  entry_type: 'daily_gift' | 'admin_recharge' | 'usage';
+  entry_type: 'daily_gift' | 'login_streak_gift' | 'admin_recharge' | 'usage';
   bucket: 'gift' | 'recharge';
   delta_tokens: number;
   note: string | null;
@@ -150,6 +158,23 @@ interface AdminApp {
   connection_duplicate_of_slug?: string | null;
 }
 
+interface FeedbackSummary {
+  id: string;
+  user_id: string;
+  username: string;
+  content_preview: string;
+  has_screenshot: boolean;
+  screenshot_content_type: string | null;
+  screenshot_size_bytes: number | null;
+  created_at: string;
+}
+
+interface FeedbackDetail extends Omit<FeedbackSummary, 'content_preview'> {
+  content: string;
+}
+
+type ReplyPhase = 'idle' | 'waiting' | 'streaming';
+
 type View =
   | { type: 'login' }
   | { type: 'register' }
@@ -163,6 +188,8 @@ const TOKEN_KEY = 'yiai_token';
 const MAX_DRAFT_IMAGES = 10;
 const MAX_DRAFT_IMAGE_BYTES = 200 * 1024;
 const MAX_DRAFT_IMAGE_SIZE_LABEL = '200KB';
+const MAX_FEEDBACK_SCREENSHOT_BYTES = 5 * 1024 * 1024;
+const MAX_FEEDBACK_SCREENSHOT_SIZE_LABEL = '5MB';
 
 function formatMessageMeta(msg: ChatMessage): string {
   const parts: string[] = [];
@@ -268,7 +295,24 @@ function LoginPage({ onLogin, onSwitch }: { onLogin: (res: AuthResponse) => void
   return (
     <div className="auth-page">
       <form className="auth-form" onSubmit={handleSubmit}>
-        <h2>登录</h2>
+        <div className="auth-brand">
+          <div className="auth-logo" role="img" aria-label="OAI Platform 标志">
+            <svg viewBox="0 0 64 64" aria-hidden="true" focusable="false">
+              <defs>
+                <linearGradient id="oai-logo-gradient" x1="8" y1="4" x2="56" y2="60" gradientUnits="userSpaceOnUse">
+                  <stop stopColor="#5f71e8" />
+                  <stop offset="1" stopColor="#8a42c8" />
+                </linearGradient>
+              </defs>
+              <path d="M32 5.5 54.5 18v28L32 58.5 9.5 46V18L32 5.5Z" fill="url(#oai-logo-gradient)" />
+              <path d="M21 27.5c0-5.9 4.7-10.5 11-10.5 6.2 0 11 4.6 11 10.5S38.2 38 32 38c-6.3 0-11-4.6-11-10.5Z" fill="none" stroke="white" strokeWidth="4" />
+              <path d="M16.5 43.5h31" stroke="white" strokeWidth="4" strokeLinecap="round" opacity=".86" />
+            </svg>
+          </div>
+          <p className="auth-eyebrow">OAI Platform</p>
+          <h2>欢迎回来</h2>
+          <p className="auth-welcome">继续探索你的 AI 助手</p>
+        </div>
         {error && <p className="error">{error}</p>}
         <label>
           用户名
@@ -552,6 +596,104 @@ export function AppIcon({ app }: { app: AppIconApp | null | undefined }) {
   return <span className="app-icon-placeholder" aria-hidden="true" />;
 }
 
+function FeedbackModal({ onClose }: { onClose: () => void }) {
+  const [content, setContent] = useState('');
+  const [screenshot, setScreenshot] = useState<File | null>(null);
+  const [error, setError] = useState('');
+  const [success, setSuccess] = useState('');
+  const [submitting, setSubmitting] = useState(false);
+
+  const handleScreenshotChange = (event: React.ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0] ?? null;
+    if (!file) {
+      setScreenshot(null);
+      return;
+    }
+    if (!['image/png', 'image/jpeg', 'image/webp'].includes(file.type)) {
+      setScreenshot(null);
+      setError('截图仅支持 PNG、JPEG 或 WebP 图片');
+      event.target.value = '';
+      return;
+    }
+    if (file.size > MAX_FEEDBACK_SCREENSHOT_BYTES) {
+      setScreenshot(null);
+      setError(`截图不能超过 ${MAX_FEEDBACK_SCREENSHOT_SIZE_LABEL}`);
+      event.target.value = '';
+      return;
+    }
+    setError('');
+    setScreenshot(file);
+  };
+
+  const handleSubmit = (event: React.SyntheticEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    const text = content.trim();
+    if (!text) {
+      setError('请填写意见内容');
+      return;
+    }
+
+    setSubmitting(true);
+    setError('');
+    void (async () => {
+      try {
+        const formData = new FormData();
+        formData.append('content', text);
+        if (screenshot) {
+          formData.append('screenshot', screenshot);
+        }
+        await api('/feedback', { method: 'POST', body: formData });
+        setSuccess('感谢反馈，已提交。');
+        setContent('');
+        setScreenshot(null);
+      } catch (err) {
+        setError(err instanceof Error ? err.message : '提交失败，请稍后重试');
+      } finally {
+        setSubmitting(false);
+      }
+    })();
+  };
+
+  return (
+    <div className="modal-overlay" onClick={() => { if (!submitting) onClose(); }}>
+      <div className="modal feedback-modal" onClick={(event) => { event.stopPropagation(); }}>
+        <h3>意见反馈</h3>
+        <p className="input-hint">你的意见会直接进入管理员后台，感谢帮助我们把平台做得更好。</p>
+        {error && <p className="error">{error}</p>}
+        {success && <p className="success">{success}</p>}
+        <form onSubmit={handleSubmit}>
+          <label>
+            意见内容 <span className="required">*</span>
+            <textarea
+              value={content}
+              onChange={(event) => { setContent(event.target.value); }}
+              placeholder="例如：哪里不好用、希望增加什么功能…"
+              maxLength={3000}
+              rows={6}
+              disabled={submitting}
+              required
+            />
+          </label>
+          <label>
+            截图（选填，最多 {MAX_FEEDBACK_SCREENSHOT_SIZE_LABEL}）
+            <input
+              type="file"
+              accept="image/png,image/jpeg,image/webp"
+              onChange={handleScreenshotChange}
+              disabled={submitting}
+            />
+          </label>
+          {screenshot && <p className="selected-file">已选择：{screenshot.name}</p>}
+          <div className="modal-actions">
+            <button type="button" className="secondary" onClick={onClose} disabled={submitting}>关闭</button>
+            <button type="submit" disabled={submitting}>{submitting ? '提交中...' : '提交反馈'}</button>
+          </div>
+        </form>
+      </div>
+    </div>
+  );
+}
+
 function AppHub({
   user,
   apps,
@@ -561,6 +703,7 @@ function AppHub({
   onLogout,
   onLedger,
   onAdmin,
+  loginReward,
 }: {
   user: User;
   apps: YiaiApp[];
@@ -570,9 +713,11 @@ function AppHub({
   onLogout: () => void;
   onLedger: () => void;
   onAdmin: () => void;
+  loginReward: LoginReward | null;
 }) {
   const roleLabel = user.role === 'admin' ? '管理员' : '用户';
   const [activeTag, setActiveTag] = useState<string>('');
+  const [feedbackOpen, setFeedbackOpen] = useState(false);
   const tags = [...new Set(apps.flatMap((app) => app.tags ?? []))];
   const visibleApps = activeTag === '' ? apps : apps.filter((app) => (app.tags ?? []).includes(activeTag));
 
@@ -590,17 +735,26 @@ function AppHub({
               管理后台
             </button>
           )}
-          <button className="secondary" onClick={onProfile}>
-            个人资料
-          </button>
-          <button onClick={onLogout}>退出登录</button>
+           <button className="secondary" onClick={onProfile}>
+             个人资料
+           </button>
+           <button className="secondary" onClick={() => { setFeedbackOpen(true); }}>
+             意见反馈
+           </button>
+           <button onClick={onLogout}>退出登录</button>
         </div>
       </header>
       <main className="hub-main">
         <h2>应用中心</h2>
+        {loginReward && loginReward.granted_tokens > 0 && (
+          <div className="login-reward-notice" role="status">
+            <span aria-hidden="true">✦</span>
+            <span>连续登录第 {loginReward.streak_days} 天，赠送余额 +{loginReward.granted_tokens.toLocaleString()} Tokens</span>
+          </div>
+        )}
         {account && (
           <p className="token-hint">
-            每日赠送 +{account.daily_gift_amount.toLocaleString()} Tokens，赠送余额最多累积至 {account.gift_tokens_max.toLocaleString()} Tokens
+            连续登录第 {account.login_streak_days} 天；下次登录最多可领 +{((account.login_streak_days + 1) * account.login_reward_base).toLocaleString()} Tokens。赠送余额上限 {account.gift_tokens_max.toLocaleString()} Tokens
           </p>
         )}
         {tags.length > 0 && (
@@ -642,6 +796,7 @@ function AppHub({
         </div>
         {visibleApps.length === 0 && <p className="empty-state">没有符合该标签的应用。</p>}
       </main>
+      {feedbackOpen && <FeedbackModal onClose={() => { setFeedbackOpen(false); }} />}
     </div>
   );
 }
@@ -737,6 +892,42 @@ function InputFormModal({
   );
 }
 
+function ReplyProgress({ phase, startedAt }: { phase: ReplyPhase; startedAt: number | null }) {
+  const [elapsedSeconds, setElapsedSeconds] = useState(0);
+
+  useEffect(() => {
+    if (phase === 'idle' || startedAt === null) {
+      setElapsedSeconds(0);
+      return;
+    }
+
+    const update = () => {
+      setElapsedSeconds(Math.max(0, Math.floor((Date.now() - startedAt) / 1000)));
+    };
+    update();
+    const timer = window.setInterval(update, 1000);
+    return () => {
+      window.clearInterval(timer);
+    };
+  }, [phase, startedAt]);
+
+  if (phase === 'idle') {
+    return null;
+  }
+
+  const isWaiting = phase === 'waiting';
+  return (
+    <div className={`reply-progress ${isWaiting ? 'waiting' : 'streaming'}`} role="status" aria-live="polite" aria-label="AI 正在回复">
+      <span className="reply-progress-orbit" aria-hidden="true"><span /></span>
+      <div className="reply-progress-copy">
+        <strong>{isWaiting ? '正在连接 AI，等待回复…' : 'AI 正在生成回复…'}</strong>
+        <span>已等待 {elapsedSeconds} 秒 · 较长回答可能需要一些时间</span>
+      </div>
+      <span className="reply-progress-shimmer" aria-hidden="true" />
+    </div>
+  );
+}
+
 export function ChatPage({
   slug,
   user: _user,
@@ -759,6 +950,8 @@ export function ChatPage({
   const [copiedMessageIndex, setCopiedMessageIndex] = useState<number | null>(null);
   const [input, setInput] = useState('');
   const [loading, setLoading] = useState(false);
+  const [replyPhase, setReplyPhase] = useState<ReplyPhase>('idle');
+  const [replyStartedAt, setReplyStartedAt] = useState<number | null>(null);
   const [error, setError] = useState('');
   const [showInputForm, setShowInputForm] = useState(false);
   const [pendingInputs, setPendingInputs] = useState<Record<string, unknown> | undefined>(undefined);
@@ -860,6 +1053,8 @@ export function ChatPage({
 
   const initialize = useCallback(async () => {
     setLoading(true);
+    setReplyPhase('idle');
+    setReplyStartedAt(null);
     setError('');
     setMessages([]);
     followLatestMessagesRef.current = true;
@@ -923,6 +1118,8 @@ export function ChatPage({
 
   const startNewConversation = () => {
     setError('');
+    setReplyPhase('idle');
+    setReplyStartedAt(null);
     setActiveConversationId(undefined);
     setMessages([]);
     followLatestMessagesRef.current = true;
@@ -1150,7 +1347,7 @@ export function ChatPage({
       return;
     }
     if (isBalanceInsufficient) {
-      setError('余额不足，请等待每日赠送或联系管理员充值');
+      setError('余额不足，请登录领取赠送额度或联系管理员充值');
       return;
     }
     setLoading(true);
@@ -1204,6 +1401,8 @@ export function ChatPage({
 
     abortControllerRef.current?.abort();
     abortControllerRef.current = new AbortController();
+    setReplyStartedAt(Date.now());
+    setReplyPhase('waiting');
 
     try {
       const response = await startChatStream(slug, token, body, abortControllerRef.current.signal);
@@ -1217,6 +1416,7 @@ export function ChatPage({
         {
           onMessage: (data) => {
             const answer = typeof data.answer === 'string' ? data.answer : '';
+            setReplyPhase('streaming');
             setMessages((prev) => {
               const next = [...prev];
               const last = next[next.length - 1];
@@ -1234,6 +1434,7 @@ export function ChatPage({
           },
           onMessageReplace: (data) => {
             const answer = typeof data.answer === 'string' ? data.answer : '';
+            setReplyPhase('streaming');
             setMessages((prev) => {
               const next = [...prev];
               const last = next[next.length - 1];
@@ -1254,6 +1455,7 @@ export function ChatPage({
             if (!url) {
               return;
             }
+            setReplyPhase('streaming');
             setMessages((prev) => {
               const next = [...prev];
               const last = next[next.length - 1];
@@ -1265,6 +1467,8 @@ export function ChatPage({
           },
           onMessageEnd: (data) => {
             setLoading(false);
+            setReplyPhase('idle');
+            setReplyStartedAt(null);
             if (typeof data.conversation_id === 'string' && !activeConversationId) {
               setActiveConversationId(data.conversation_id);
               void loadConversations();
@@ -1296,6 +1500,8 @@ export function ChatPage({
             const message = typeof data.message === 'string' ? data.message : '聊天服务返回错误';
             setError(message);
             setLoading(false);
+            setReplyPhase('idle');
+            setReplyStartedAt(null);
             setMessages((prev) => {
               const next = [...prev];
               const last = next[next.length - 1];
@@ -1307,6 +1513,8 @@ export function ChatPage({
           },
           onComplete: () => {
             setLoading(false);
+            setReplyPhase('idle');
+            setReplyStartedAt(null);
             setMessages((prev) => {
               const next = [...prev];
               const last = next[next.length - 1];
@@ -1322,6 +1530,8 @@ export function ChatPage({
     } catch (err) {
       setError(err instanceof Error ? err.message : '发送失败');
       setLoading(false);
+      setReplyPhase('idle');
+      setReplyStartedAt(null);
       setMessages((prev) => {
         const next = [...prev];
         const last = next[next.length - 1];
@@ -1555,6 +1765,7 @@ export function ChatPage({
         </div>
 
         <div className="input-area">
+          <ReplyProgress phase={replyPhase} startedAt={replyStartedAt} />
           {supportsImages && pendingImages.length > 0 && (
             <div className="pending-images" data-testid="image-drafts">
               <span className="pending-image-count">已选 {pendingImages.length}/{MAX_DRAFT_IMAGES} 张图片</span>
@@ -1596,7 +1807,7 @@ export function ChatPage({
                   insertInputNewline();
                 }
               }}
-              placeholder={isBalanceInsufficient ? '余额不足，请等待每日赠送或联系管理员充值' : '输入问题...'}
+              placeholder={isBalanceInsufficient ? '余额不足，请登录领取赠送额度或联系管理员充值' : '输入问题...'}
               disabled={loading || !!inputFormLoadError}
               enterKeyHint="enter"
               aria-label="聊天输入框"
@@ -1633,7 +1844,7 @@ export function ChatPage({
                 (!input.trim() && pendingImages.length === 0)
               }
             >
-              {imageUploadProgress || (loading ? '发送中...' : '发送')}
+              {imageUploadProgress || (replyPhase !== 'idle' ? '回复生成中...' : loading ? '发送中...' : '发送')}
             </button>
           </form>
         </div>
@@ -1687,7 +1898,9 @@ export function ChatPage({
 function formatEntryType(type: LedgerEntry['entry_type']): string {
   switch (type) {
     case 'daily_gift':
-      return '每日赠送';
+      return '旧版每日赠送';
+    case 'login_streak_gift':
+      return '连续登录奖励';
     case 'admin_recharge':
       return '管理员充值';
     case 'usage':
@@ -2907,8 +3120,130 @@ function AdminAppsTab() {
   );
 }
 
+function FeedbackScreenshot({ feedbackId }: { feedbackId: string }) {
+  const [imageUrl, setImageUrl] = useState<string | null>(null);
+  const [error, setError] = useState('');
+
+  useEffect(() => {
+    const controller = new AbortController();
+    let objectUrl: string | null = null;
+    const token = localStorage.getItem(TOKEN_KEY);
+    void (async () => {
+      try {
+        const response = await fetch(`/api/admin/feedback/${feedbackId}/screenshot`, {
+          headers: token ? { Authorization: `Bearer ${token}` } : undefined,
+          signal: controller.signal,
+        });
+        if (!response.ok) {
+          throw new Error('截图加载失败');
+        }
+        const blob = await response.blob();
+        objectUrl = URL.createObjectURL(blob);
+        setImageUrl(objectUrl);
+      } catch (err) {
+        if (!controller.signal.aborted) {
+          setError(err instanceof Error ? err.message : '截图加载失败');
+        }
+      }
+    })();
+
+    return () => {
+      controller.abort();
+      if (objectUrl) {
+        URL.revokeObjectURL(objectUrl);
+      }
+    };
+  }, [feedbackId]);
+
+  if (error) return <p className="error">{error}</p>;
+  if (!imageUrl) return <p className="input-hint">正在加载截图…</p>;
+  return <img className="feedback-screenshot" src={imageUrl} alt="用户提交的反馈截图" />;
+}
+
+function AdminFeedbackTab() {
+  const [feedbacks, setFeedbacks] = useState<FeedbackSummary[]>([]);
+  const [selected, setSelected] = useState<FeedbackDetail | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState('');
+
+  const loadFeedbacks = useCallback(async () => {
+    const list = await api<FeedbackSummary[]>('/admin/feedback');
+    setFeedbacks(list);
+  }, []);
+
+  useEffect(() => {
+    setLoading(true);
+    loadFeedbacks()
+      .catch((err: unknown) => {
+        setError(err instanceof Error ? err.message : '加载反馈失败');
+      })
+      .finally(() => {
+        setLoading(false);
+      });
+  }, [loadFeedbacks]);
+
+  const openDetail = (feedbackId: string) => {
+    setError('');
+    void (async () => {
+      try {
+        setSelected(await api<FeedbackDetail>(`/admin/feedback/${feedbackId}`));
+      } catch (err) {
+        setError(err instanceof Error ? err.message : '加载反馈详情失败');
+      }
+    })();
+  };
+
+  return (
+    <div className="admin-tab feedback-admin-tab">
+      {error && <p className="error-banner">{error}</p>}
+      {loading && <p>加载中...</p>}
+      {!loading && feedbacks.length === 0 && <p className="empty">暂时没有用户反馈。</p>}
+      {!loading && feedbacks.length > 0 && (
+        <table className="admin-table feedback-table">
+          <thead>
+            <tr>
+              <th>时间</th>
+              <th>用户</th>
+              <th>内容摘要</th>
+              <th>截图</th>
+              <th>操作</th>
+            </tr>
+          </thead>
+          <tbody>
+            {feedbacks.map((feedback) => (
+              <tr key={feedback.id}>
+                <td>{new Date(feedback.created_at).toLocaleString('zh-CN')}</td>
+                <td>{feedback.username}</td>
+                <td className="feedback-preview">{feedback.content_preview}</td>
+                <td>{feedback.has_screenshot ? '有截图' : '无'}</td>
+                <td><button className="secondary" onClick={() => { openDetail(feedback.id); }}>查看详情</button></td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      )}
+      {selected && (
+        <div className="modal-overlay" onClick={() => { setSelected(null); }}>
+          <div className="modal wide feedback-detail-modal" onClick={(event) => { event.stopPropagation(); }}>
+            <h3>用户反馈详情</h3>
+            <dl className="feedback-detail-meta">
+              <div><dt>提交用户</dt><dd>{selected.username}</dd></div>
+              <div><dt>提交时间</dt><dd>{new Date(selected.created_at).toLocaleString('zh-CN')}</dd></div>
+            </dl>
+            <p className="feedback-detail-content">{selected.content}</p>
+            {selected.has_screenshot && <FeedbackScreenshot feedbackId={selected.id} />}
+            <div className="modal-actions">
+              <button onClick={() => { setSelected(null); }}>关闭</button>
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
 function AdminPage({ onBack }: { onBack: () => void }) {
-  const [tab, setTab] = useState<'users' | 'apps'>('users');
+  const [tab, setTab] = useState<'users' | 'apps' | 'feedback'>('users');
 
   return (
     <div className="admin-page">
@@ -2925,10 +3260,14 @@ function AdminPage({ onBack }: { onBack: () => void }) {
         <button className={tab === 'apps' ? 'active' : ''} onClick={() => { setTab('apps'); }}>
           应用管理
         </button>
+        <button className={tab === 'feedback' ? 'active' : ''} onClick={() => { setTab('feedback'); }}>
+          意见反馈
+        </button>
       </nav>
       <main className="admin-main">
         {tab === 'users' && <AdminUsersTab />}
         {tab === 'apps' && <AdminAppsTab />}
+        {tab === 'feedback' && <AdminFeedbackTab />}
       </main>
     </div>
   );
@@ -2940,6 +3279,7 @@ function App() {
   const [loading, setLoading] = useState(true);
   const [apps, setApps] = useState<YiaiApp[]>([]);
   const [account, setAccount] = useState<TokenAccount | null>(null);
+  const [loginReward, setLoginReward] = useState<LoginReward | null>(null);
 
   const refreshAccount = useCallback(async () => {
     try {
@@ -2958,12 +3298,32 @@ function App() {
     }
 
     api<User>('/auth/me')
-      .then((me) => {
+      .then(async (me) => {
         setUser(me);
-        return api<YiaiApp[]>('/apps');
+        const [list, rewardResult] = await Promise.all([
+          api<YiaiApp[]>('/apps'),
+          api<{ login_reward: LoginReward }>('/auth/login-reward', { method: 'POST' })
+            .catch(() => null),
+        ]);
+        const restoredReward = rewardResult?.login_reward;
+        const loginReward: LoginReward | null = restoredReward &&
+          typeof restoredReward.streak_days === 'number' &&
+          typeof restoredReward.reward_tokens === 'number' &&
+          typeof restoredReward.granted_tokens === 'number'
+          ? restoredReward
+          : null;
+        return { list, loginReward };
       })
-      .then((list) => {
+      .then(({ list, loginReward: restoredLoginReward }) => {
         setApps(list);
+        const grantedTokens = restoredLoginReward?.granted_tokens ?? 0;
+        if (grantedTokens > 0) {
+          setLoginReward({
+            streak_days: restoredLoginReward?.streak_days ?? 0,
+            reward_tokens: restoredLoginReward?.reward_tokens ?? grantedTokens,
+            granted_tokens: grantedTokens,
+          });
+        }
         setView({ type: 'hub' });
         void refreshAccount();
       })
@@ -2978,6 +3338,7 @@ function App() {
   const handleLogin = (res: AuthResponse) => {
     localStorage.setItem(TOKEN_KEY, res.token);
     setUser(res.user);
+    setLoginReward(res.login_reward ?? null);
     void (async () => {
       try {
         const list = await api<YiaiApp[]>('/apps');
@@ -2995,6 +3356,7 @@ function App() {
     setUser(null);
     setApps([]);
     setAccount(null);
+    setLoginReward(null);
     setView({ type: 'login' });
   };
 
@@ -3029,9 +3391,10 @@ function App() {
           onSelectApp={(slug) => { setView({ type: 'chat', slug }); }}
           onProfile={() => { setView({ type: 'profile' }); }}
           onLogout={handleLogout}
-          onLedger={() => { setView({ type: 'ledger' }); }}
-          onAdmin={() => { setView({ type: 'admin' }); }}
-        />
+           onLedger={() => { setView({ type: 'ledger' }); }}
+           onAdmin={() => { setView({ type: 'admin' }); }}
+           loginReward={loginReward}
+         />
       )}
       {view.type === 'chat' && user && (
         <ChatPage

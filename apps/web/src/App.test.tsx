@@ -10,7 +10,9 @@ describe('App', () => {
   it('renders the login page by default', () => {
     render(<App />);
 
-    expect(screen.getByRole('heading', { name: '登录' })).toBeInTheDocument();
+    expect(screen.getByText('OAI Platform')).toBeInTheDocument();
+    expect(screen.getByRole('heading', { name: '欢迎回来' })).toBeInTheDocument();
+    expect(screen.getByText('继续探索你的 AI 助手')).toBeInTheDocument();
     expect(screen.getByRole('button', { name: '登录' })).toBeInTheDocument();
     expect(screen.getByRole('button', { name: '注册' })).toBeInTheDocument();
   });
@@ -33,9 +35,9 @@ describe('AppHub', () => {
           JSON.stringify({
             gift_tokens: 100,
             recharge_tokens: 50,
-            daily_gift_amount: 10,
-            gift_tokens_max: 200,
-            last_gift_date: null,
+            login_reward_base: 50_000,
+            gift_tokens_max: 1_000_000,
+            login_streak_days: 0, last_login_reward_date: null,
           })
         )
       );
@@ -174,6 +176,19 @@ describe('AppHub', () => {
     expect(screen.queryByText(/总余额/)).not.toBeInTheDocument();
     expect(screen.queryByText(/总计/)).not.toBeInTheDocument();
   });
+
+  it('opens feedback form with required text and an optional screenshot', async () => {
+    render(<App />);
+
+    await screen.findByText('应用中心');
+    fireEvent.click(screen.getByRole('button', { name: '意见反馈' }));
+
+    expect(screen.getByRole('heading', { name: '意见反馈' })).toBeInTheDocument();
+    expect(screen.getByLabelText(/意见内容/)).toBeRequired();
+    const screenshot = screen.getByLabelText(/截图/);
+    expect(screenshot).toHaveAttribute('type', 'file');
+    expect(screenshot).not.toBeRequired();
+  });
 });
 
 describe('AdminAppsTab', () => {
@@ -193,9 +208,9 @@ describe('AdminAppsTab', () => {
           JSON.stringify({
             gift_tokens: 100,
             recharge_tokens: 50,
-            daily_gift_amount: 10,
-            gift_tokens_max: 200,
-            last_gift_date: null,
+            login_reward_base: 50_000,
+            gift_tokens_max: 1_000_000,
+            login_streak_days: 0, last_login_reward_date: null,
           })
         )
       );
@@ -867,9 +882,9 @@ describe('ChatPage mobile drawer', () => {
         account={{
           gift_tokens: 100,
           recharge_tokens: 50,
-          daily_gift_amount: 10,
-          gift_tokens_max: 200,
-          last_gift_date: null,
+          login_reward_base: 50_000,
+          gift_tokens_max: 1_000_000,
+          login_streak_days: 0, last_login_reward_date: null,
         }}
         onBack={() => {}}
         onLogout={() => {}}

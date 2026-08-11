@@ -6,6 +6,7 @@ import { authRoutes } from '../src/routes/auth.js';
 import { tokenAccountRoutes } from '../src/routes/token-account.js';
 import { createInMemoryPool, createTestApp, createTestUser } from './helpers/in-memory-db.js';
 import type { YiaiApp, AuthResponse, AppBootstrap, YiaiConversation, YiaiMessage, UploadedFile } from '@yiai/shared';
+import { signToken } from '../src/auth/jwt.js';
 
 vi.mock('../src/auth/password.js', () => ({
   hashPassword: vi.fn((password: string) => `hashed-${password}`),
@@ -490,7 +491,7 @@ describe('App Routes', () => {
       [userId]
     );
 
-    const token = await loginUser(app, 'broke_user', 'testpass');
+    const token = signToken({ id: userId, username: 'broke_user', role: 'user' });
 
     const response = await app.inject({
       method: 'POST',
@@ -501,7 +502,7 @@ describe('App Routes', () => {
 
     expect(response.statusCode).toBe(402);
     const body = JSON.parse(response.body) as { error: string };
-    expect(body.error).toBe('余额不足，请等待每日赠送或联系管理员充值');
+    expect(body.error).toBe('余额不足，请登录领取赠送额度或联系管理员充值');
     expect(fetchMock).not.toHaveBeenCalled();
     const usageResult = await pool.query('SELECT * FROM yiai_usage_records');
     expect(usageResult.rows).toHaveLength(0);
@@ -527,7 +528,7 @@ describe('App Routes', () => {
       [userId]
     );
 
-    const token = await loginUser(app, 'gift_positive_user', 'testpass');
+    const token = signToken({ id: userId, username: 'gift_positive_user', role: 'user' });
 
     const response = await app.inject({
       method: 'POST',
@@ -567,7 +568,7 @@ describe('App Routes', () => {
       [userId]
     );
 
-    const token = await loginUser(app, 'recharge_positive_user', 'testpass');
+    const token = signToken({ id: userId, username: 'recharge_positive_user', role: 'user' });
 
     const response = await app.inject({
       method: 'POST',

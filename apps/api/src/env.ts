@@ -13,4 +13,5 @@ export const env = {
   DB_NAME: process.env.YIAI_PLATFORM_DB_NAME ?? 'yiai_platform',
   DATABASE_URL: process.env.YIAI_PLATFORM_DATABASE_URL,
   JWT_SECRET: process.env.YIAI_PLATFORM_JWT_SECRET ?? '',
+  FEEDBACK_UPLOAD_DIR: process.env.YIAI_PLATFORM_FEEDBACK_UPLOAD_DIR ?? '/app/data/feedback-uploads',
 };

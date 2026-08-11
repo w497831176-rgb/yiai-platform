@@ -17,7 +17,7 @@ FROM node:22-alpine AS runner
 
 WORKDIR /app
 
-RUN mkdir -p /app/data/icon-cache
+RUN mkdir -p /app/data/icon-cache /app/data/feedback-uploads
 
 ENV NODE_ENV=production
 

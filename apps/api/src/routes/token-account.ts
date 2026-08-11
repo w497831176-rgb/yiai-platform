@@ -1,7 +1,7 @@
 import type { FastifyInstance } from 'fastify';
 import type { Pool } from 'pg';
 import { authenticate } from '../auth/decorator.js';
-import { DAILY_GIFT_AMOUNT, MAX_GIFT_TOKENS, getLedgerEntries, getTokenAccount } from '../services/token-account.js';
+import { LOGIN_STREAK_REWARD_BASE, MAX_GIFT_TOKENS, getLedgerEntries, getTokenAccount } from '../services/token-account.js';
 
 export function tokenAccountRoutes(fastify: FastifyInstance, options: { pool: Pool }) {
   const { pool } = options;
@@ -17,9 +17,10 @@ export function tokenAccountRoutes(fastify: FastifyInstance, options: { pool: Po
     return {
       gift_tokens: account.gift_tokens,
       recharge_tokens: account.recharge_tokens,
-      daily_gift_amount: DAILY_GIFT_AMOUNT,
+      login_reward_base: LOGIN_STREAK_REWARD_BASE,
       gift_tokens_max: MAX_GIFT_TOKENS,
-      last_gift_date: account.last_gift_date,
+      login_streak_days: account.login_streak_days,
+      last_login_reward_date: account.last_login_reward_date,
     };
   });
 

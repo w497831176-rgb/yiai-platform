@@ -4,7 +4,7 @@ import type { UserInputFormField, UserInputFormType, YiaiAppType } from '@yiai/s
 import { sortAppsByTagAndName } from '../services/app-order.js';
 import { authenticate } from '../auth/decorator.js';
 import { hashPassword } from '../auth/password.js';
-import { ensureDailyGift, getAllUserAccounts, getLedgerEntries, rechargeTokens } from '../services/token-account.js';
+import { getAllUserAccounts, getLedgerEntries, rechargeTokens } from '../services/token-account.js';
 import { syncAppMetadata, toSafeApp, YiaiUpstreamError, type UpstreamAppMetadata } from '../services/yiai.js';
 import { cacheImageIconUrl, getLocalIconUrl, refreshAppIconCache } from '../services/icon-cache.js';
 
@@ -70,6 +70,15 @@ interface AdminAppRow {
   icon_cache_filename: string | null;
   icon_cache_content_type: string | null;
   icon_cached_at: Date | null;
+}
+
+interface AdminUserAccount {
+  id: string;
+  username: string;
+  role: string;
+  created_at: string;
+  gift_tokens: number;
+  recharge_tokens: number;
 }
 
 const ADMIN_APP_COLUMNS = `id, slug, name, description, icon, icon_type, icon_background,
@@ -351,10 +360,8 @@ export function adminRoutes(fastify: FastifyInstance, options: { pool: Pool }) {
 
   fastify.get('/admin/users', { preHandler: authenticate }, async (request, reply) => {
     if (!assertAdmin(request, reply)) return;
-    const userRows = await pool.query<{ id: string }>('SELECT id FROM users ORDER BY created_at DESC');
-    await Promise.all(userRows.rows.map((row) => ensureDailyGift(pool, row.id)));
-    const users = await getAllUserAccounts(pool);
-    return users.map((u) => ({
+    const users: AdminUserAccount[] = await getAllUserAccounts(pool);
+    return users.map((u: AdminUserAccount) => ({
       id: u.id,
       username: u.username,
       role: u.role,

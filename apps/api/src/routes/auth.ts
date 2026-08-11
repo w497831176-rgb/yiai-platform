@@ -3,6 +3,7 @@ import type { Pool } from 'pg';
 import { hashPassword, verifyPassword } from '../auth/password.js';
 import { signToken } from '../auth/jwt.js';
 import { authenticate } from '../auth/decorator.js';
+import { awardLoginStreakReward } from '../services/token-account.js';
 import type { SafeUser } from '@yiai/shared';
 
 interface AuthBody {
@@ -73,6 +74,18 @@ function validateChangePasswordBody(body: unknown): body is ChangePasswordBody {
   );
 }
 
+function toLoginRewardResponse(loginReward: {
+  streak_days: number;
+  reward_tokens: number;
+  granted_tokens: number;
+}) {
+  return {
+    streak_days: loginReward.streak_days,
+    reward_tokens: loginReward.reward_tokens,
+    granted_tokens: loginReward.granted_tokens,
+  };
+}
+
 export function authRoutes(fastify: FastifyInstance, options: { pool: Pool }): void {
   const { pool } = options;
 
@@ -131,9 +144,6 @@ export function authRoutes(fastify: FastifyInstance, options: { pool: Pool }): v
         client.release();
       }
 
-      const { ensureDailyGift } = await import('../services/token-account.js');
-      await ensureDailyGift(pool, user.id);
-
       const token = signToken(toSafeUser(user));
       return await reply.status(201).send({ token, user: toSafeUser(user) });
     } catch {
@@ -160,10 +170,30 @@ export function authRoutes(fastify: FastifyInstance, options: { pool: Pool }): v
         return await reply.status(401).send({ error: '用户名或密码错误' });
       }
 
+      const loginReward = await awardLoginStreakReward(pool, user.id);
       const token = signToken(toSafeUser(user));
-      return await reply.send({ token, user: toSafeUser(user) });
+      return await reply.send({
+        token,
+        user: toSafeUser(user),
+        login_reward: toLoginRewardResponse(loginReward),
+      });
     } catch {
       return await reply.status(500).send({ error: '服务器内部错误' });
+    }
+  });
+
+  // A remembered session should count as a genuine daily return visit, but this
+  // explicit POST prevents balance reads, chats and admin browsing from issuing rewards.
+  fastify.post('/login-reward', { preHandler: authenticate }, async (request, reply) => {
+    const userId = request.user?.id;
+    if (!userId) {
+      return await reply.status(401).send({ error: '未登录' });
+    }
+    try {
+      const loginReward = await awardLoginStreakReward(pool, userId);
+      return await reply.send({ login_reward: toLoginRewardResponse(loginReward) });
+    } catch {
+      return await reply.status(500).send({ error: '领取登录奖励失败，请稍后重试' });
     }
   });
 

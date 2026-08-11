@@ -91,9 +91,9 @@ describe('ChatPage latest conversation inputs restore', () => {
         account={{
           gift_tokens: 100,
           recharge_tokens: 50,
-          daily_gift_amount: 10,
-          gift_tokens_max: 200,
-          last_gift_date: null,
+          login_reward_base: 50_000,
+          gift_tokens_max: 1_000_000,
+          login_streak_days: 0, last_login_reward_date: null,
         }}
         onBack={() => {}}
         onLogout={() => {}}
@@ -151,7 +151,7 @@ describe('ChatPage latest conversation inputs restore', () => {
       <ChatPage
         slug="markdown-app"
         user={{ id: 'user-1', username: 'tester', role: 'user' }}
-        account={{ gift_tokens: 100, recharge_tokens: 50, daily_gift_amount: 10, gift_tokens_max: 200, last_gift_date: null }}
+        account={{ gift_tokens: 100, recharge_tokens: 50, login_reward_base: 50_000, gift_tokens_max: 1_000_000, login_streak_days: 0, last_login_reward_date: null }}
         onBack={() => {}}
         onLogout={() => {}}
       />
@@ -189,7 +189,7 @@ describe('ChatPage latest conversation inputs restore', () => {
       <ChatPage
         slug="copy-app"
         user={{ id: 'user-1', username: 'tester', role: 'user' }}
-        account={{ gift_tokens: 100, recharge_tokens: 50, daily_gift_amount: 10, gift_tokens_max: 200, last_gift_date: null }}
+        account={{ gift_tokens: 100, recharge_tokens: 50, login_reward_base: 50_000, gift_tokens_max: 1_000_000, login_streak_days: 0, last_login_reward_date: null }}
         onBack={() => {}}
         onLogout={() => {}}
       />
@@ -230,7 +230,7 @@ describe('ChatPage latest conversation inputs restore', () => {
       <ChatPage
         slug="delete-app"
         user={{ id: 'user-1', username: 'tester', role: 'user' }}
-        account={{ gift_tokens: 100, recharge_tokens: 50, daily_gift_amount: 10, gift_tokens_max: 200, last_gift_date: null }}
+        account={{ gift_tokens: 100, recharge_tokens: 50, login_reward_base: 50_000, gift_tokens_max: 1_000_000, login_streak_days: 0, last_login_reward_date: null }}
         onBack={() => {}}
         onLogout={() => {}}
       />
@@ -258,7 +258,7 @@ describe('ChatPage latest conversation inputs restore', () => {
       <ChatPage
         slug="shouyi-tcm-dual-ai"
         user={{ id: 'user-1', username: 'tester', role: 'user' }}
-        account={{ gift_tokens: 100, recharge_tokens: 50, daily_gift_amount: 10, gift_tokens_max: 200, last_gift_date: null }}
+        account={{ gift_tokens: 100, recharge_tokens: 50, login_reward_base: 50_000, gift_tokens_max: 1_000_000, login_streak_days: 0, last_login_reward_date: null }}
         onBack={() => {}}
         onLogout={() => {}}
       />
@@ -295,7 +295,7 @@ describe('ChatPage latest conversation inputs restore', () => {
       <ChatPage
         slug="recover-app"
         user={{ id: 'user-1', username: 'tester', role: 'user' }}
-        account={{ gift_tokens: 100, recharge_tokens: 50, daily_gift_amount: 10, gift_tokens_max: 200, last_gift_date: null }}
+        account={{ gift_tokens: 100, recharge_tokens: 50, login_reward_base: 50_000, gift_tokens_max: 1_000_000, login_streak_days: 0, last_login_reward_date: null }}
         onBack={() => {}}
         onLogout={() => {}}
       />
@@ -331,7 +331,7 @@ describe('ChatPage latest conversation inputs restore', () => {
       <ChatPage
         slug="textarea-app"
         user={{ id: 'user-1', username: 'tester', role: 'user' }}
-        account={{ gift_tokens: 100, recharge_tokens: 50, daily_gift_amount: 10, gift_tokens_max: 200, last_gift_date: null }}
+        account={{ gift_tokens: 100, recharge_tokens: 50, login_reward_base: 50_000, gift_tokens_max: 1_000_000, login_streak_days: 0, last_login_reward_date: null }}
         onBack={() => {}}
         onLogout={() => {}}
       />
@@ -358,7 +358,7 @@ describe('ChatPage latest conversation inputs restore', () => {
     });
   });
 
-  it('shows a replying indicator until the first stream text arrives', async () => {
+  it('keeps a visible reply progress state after the first stream text and clears it only on message_end', async () => {
     let streamController: ReadableStreamDefaultController<Uint8Array> | undefined;
     fetchMock.mockImplementation((input) => {
       const url = typeof input === 'string' ? input : input.url;
@@ -383,7 +383,7 @@ describe('ChatPage latest conversation inputs restore', () => {
       <ChatPage
         slug="replying-app"
         user={{ id: 'user-1', username: 'tester', role: 'user' }}
-        account={{ gift_tokens: 100, recharge_tokens: 50, daily_gift_amount: 10, gift_tokens_max: 200, last_gift_date: null }}
+        account={{ gift_tokens: 100, recharge_tokens: 50, login_reward_base: 50_000, gift_tokens_max: 1_000_000, login_streak_days: 0, last_login_reward_date: null }}
         onBack={() => {}}
         onLogout={() => {}}
       />
@@ -393,13 +393,21 @@ describe('ChatPage latest conversation inputs restore', () => {
     fireEvent.change(input, { target: { value: '请开始回答' } });
     fireEvent.click(screen.getByRole('button', { name: '发送' }));
 
-    expect(await screen.findByRole('status', { name: 'AI 回复中' })).toBeInTheDocument();
+    expect(await screen.findByRole('status', { name: 'AI 正在回复' })).toBeInTheDocument();
+    expect(screen.getByText('正在连接 AI，等待回复…')).toBeInTheDocument();
     act(() => {
       streamController?.enqueue(new TextEncoder().encode('data: {"event":"message","answer":"已收到"}\n\n'));
     });
     await waitFor(() => {
       expect(screen.getByText('已收到')).toBeInTheDocument();
-      expect(screen.queryByRole('status', { name: 'AI 回复中' })).not.toBeInTheDocument();
+      expect(screen.getByRole('status', { name: 'AI 正在回复' })).toBeInTheDocument();
+      expect(screen.getByText('AI 正在生成回复…')).toBeInTheDocument();
+    });
+    act(() => {
+      streamController?.enqueue(new TextEncoder().encode('data: {"event":"message_end","metadata":{"usage":{"total_tokens":8}}}\n\n'));
+    });
+    await waitFor(() => {
+      expect(screen.queryByRole('status', { name: 'AI 正在回复' })).not.toBeInTheDocument();
     });
     act(() => {
       streamController?.close();
@@ -432,7 +440,7 @@ describe('ChatPage latest conversation inputs restore', () => {
       <ChatPage
         slug="scroll-app"
         user={{ id: 'user-1', username: 'tester', role: 'user' }}
-        account={{ gift_tokens: 100, recharge_tokens: 50, daily_gift_amount: 10, gift_tokens_max: 200, last_gift_date: null }}
+        account={{ gift_tokens: 100, recharge_tokens: 50, login_reward_base: 50_000, gift_tokens_max: 1_000_000, login_streak_days: 0, last_login_reward_date: null }}
         onBack={() => {}}
         onLogout={() => {}}
       />
@@ -480,7 +488,7 @@ describe('ChatPage latest conversation inputs restore', () => {
       <ChatPage
         slug="rename-app"
         user={{ id: 'user-1', username: 'tester', role: 'user' }}
-        account={{ gift_tokens: 100, recharge_tokens: 50, daily_gift_amount: 10, gift_tokens_max: 200, last_gift_date: null }}
+        account={{ gift_tokens: 100, recharge_tokens: 50, login_reward_base: 50_000, gift_tokens_max: 1_000_000, login_streak_days: 0, last_login_reward_date: null }}
         onBack={() => {}}
         onLogout={() => {}}
       />
@@ -520,7 +528,7 @@ describe('ChatPage latest conversation inputs restore', () => {
       <ChatPage
         slug="text-only-app"
         user={{ id: 'user-1', username: 'tester', role: 'user' }}
-        account={{ gift_tokens: 100, recharge_tokens: 50, daily_gift_amount: 10, gift_tokens_max: 200, last_gift_date: null }}
+        account={{ gift_tokens: 100, recharge_tokens: 50, login_reward_base: 50_000, gift_tokens_max: 1_000_000, login_streak_days: 0, last_login_reward_date: null }}
         onBack={() => {}}
         onLogout={() => {}}
       />
@@ -558,7 +566,7 @@ describe('ChatPage latest conversation inputs restore', () => {
       <ChatPage
         slug="dify-image-app"
         user={{ id: 'user-1', username: 'tester', role: 'user' }}
-        account={{ gift_tokens: 100, recharge_tokens: 50, daily_gift_amount: 10, gift_tokens_max: 200, last_gift_date: null }}
+        account={{ gift_tokens: 100, recharge_tokens: 50, login_reward_base: 50_000, gift_tokens_max: 1_000_000, login_streak_days: 0, last_login_reward_date: null }}
         onBack={() => {}}
         onLogout={() => {}}
       />
@@ -617,7 +625,7 @@ describe('ChatPage latest conversation inputs restore', () => {
       <ChatPage
         slug="draft-size-app"
         user={{ id: 'user-1', username: 'tester', role: 'user' }}
-        account={{ gift_tokens: 100, recharge_tokens: 50, daily_gift_amount: 10, gift_tokens_max: 200, last_gift_date: null }}
+        account={{ gift_tokens: 100, recharge_tokens: 50, login_reward_base: 50_000, gift_tokens_max: 1_000_000, login_streak_days: 0, last_login_reward_date: null }}
         onBack={() => {}}
         onLogout={() => {}}
       />
@@ -665,7 +673,7 @@ describe('ChatPage latest conversation inputs restore', () => {
       <ChatPage
         slug="html-upload-app"
         user={{ id: 'user-1', username: 'tester', role: 'user' }}
-        account={{ gift_tokens: 100, recharge_tokens: 50, daily_gift_amount: 10, gift_tokens_max: 200, last_gift_date: null }}
+        account={{ gift_tokens: 100, recharge_tokens: 50, login_reward_base: 50_000, gift_tokens_max: 1_000_000, login_streak_days: 0, last_login_reward_date: null }}
         onBack={() => {}}
         onLogout={() => {}}
       />
@@ -711,7 +719,7 @@ describe('ChatPage latest conversation inputs restore', () => {
       <ChatPage
         slug="draft-image-app"
         user={{ id: 'user-1', username: 'tester', role: 'user' }}
-        account={{ gift_tokens: 100, recharge_tokens: 50, daily_gift_amount: 10, gift_tokens_max: 200, last_gift_date: null }}
+        account={{ gift_tokens: 100, recharge_tokens: 50, login_reward_base: 50_000, gift_tokens_max: 1_000_000, login_streak_days: 0, last_login_reward_date: null }}
         onBack={() => {}}
         onLogout={() => {}}
       />

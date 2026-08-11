@@ -42,6 +42,8 @@ export async function createInMemoryPool(): Promise<Pool> {
     '009_create_hidden_conversations.sql',
     '010_create_conversation_display_names.sql',
     '011_add_yiai_app_image_support.sql',
+    '012_add_login_streak_rewards.sql',
+    '013_create_feedbacks.sql',
   ];
 
   for (const file of files) {

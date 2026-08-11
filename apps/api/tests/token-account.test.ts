@@ -6,6 +6,8 @@ import { createInMemoryPool, createTestApp, createTestUser } from './helpers/in-
 import { tokenAccountRoutes } from '../src/routes/token-account.js';
 import { authRoutes } from '../src/routes/auth.js';
 import { adminRoutes } from '../src/routes/admin.js';
+import { awardLoginStreakReward } from '../src/services/token-account.js';
+import { signToken } from '../src/auth/jwt.js';
 
 vi.mock('../src/auth/password.js', () => ({
   hashPassword: vi.fn((password: string) => `hashed-${password}`),
@@ -37,7 +39,7 @@ describe('Token Account Service', () => {
     pool = await createInMemoryPool();
   });
 
-  it('newly registered user receives 50,000 daily gift tokens and a ledger entry', async () => {
+  it('rewards the first successful login, not registration itself', async () => {
     const app = await buildApp(pool);
 
     const registerResponse = await app.inject({
@@ -47,6 +49,13 @@ describe('Token Account Service', () => {
     });
 
     expect(registerResponse.statusCode).toBe(201);
+
+    const registered = JSON.parse(registerResponse.body) as { user: { id: string } };
+    const beforeLogin = await pool.query<{ gift_tokens: number }>(
+      'SELECT gift_tokens FROM token_accounts WHERE user_id = $1',
+      [registered.user.id]
+    );
+    expect(beforeLogin.rows[0].gift_tokens).toBe(0);
 
     const token = await login(app, 'new_gift_user', 'secret123');
 
@@ -60,9 +69,11 @@ describe('Token Account Service', () => {
     const account = JSON.parse(accountResponse.body) as {
       gift_tokens: number;
       recharge_tokens: number;
+      login_streak_days: number;
     };
     expect(account.gift_tokens).toBe(50000);
     expect(account.recharge_tokens).toBe(0);
+    expect(account.login_streak_days).toBe(1);
     expect('total_tokens' in account).toBe(false);
 
     const ledgerResponse = await app.inject({
@@ -78,28 +89,18 @@ describe('Token Account Service', () => {
       delta_tokens: number;
     }>;
     expect(ledger).toHaveLength(1);
-    expect(ledger[0].entry_type).toBe('daily_gift');
+    expect(ledger[0].entry_type).toBe('login_streak_gift');
     expect(ledger[0].bucket).toBe('gift');
     expect(ledger[0].delta_tokens).toBe(50000);
   });
 
-  it('does not double grant daily gift on the same day', async () => {
+  it('does not double grant a streak reward on the same login day', async () => {
     const app = await buildApp(pool);
-    const userId = await createTestUser(pool, 'same_day_user');
+    await createTestUser(pool, 'same_day_user');
 
-    // Simulate yesterday's gift to ensure token_account exists and then grant today's
-    await pool.query("UPDATE token_accounts SET gift_tokens = 0, last_gift_date = CURRENT_DATE - INTERVAL '1 day' WHERE user_id = $1", [userId]);
-
+    await login(app, 'same_day_user', 'secret123');
     const token = await login(app, 'same_day_user', 'secret123');
 
-    // First read
-    await app.inject({
-      method: 'GET',
-      url: '/api/token-account',
-      headers: { Authorization: `Bearer ${token}` },
-    });
-
-    // Second read
     const accountResponse = await app.inject({
       method: 'GET',
       url: '/api/token-account',
@@ -115,118 +116,96 @@ describe('Token Account Service', () => {
       headers: { Authorization: `Bearer ${token}` },
     });
     const ledger = JSON.parse(ledgerResponse.body) as Array<{ entry_type: string }>;
-    expect(ledger.filter((e) => e.entry_type === 'daily_gift')).toHaveLength(1);
+    expect(ledger.filter((e) => e.entry_type === 'login_streak_gift')).toHaveLength(1);
   });
 
-  it('grants daily gift across days without exceeding 100,000 cap', async () => {
-    const app = await buildApp(pool);
-    const userId = await createTestUser(pool, 'cross_day_user');
+  it('increases consecutive rewards and resets after a missed day', async () => {
+    const userId = await createTestUser(pool, 'streak_user');
+    const dayOne = new Date('2026-01-10T12:00:00.000Z');
+    const dayTwo = new Date('2026-01-11T12:00:00.000Z');
+    const dayThree = new Date('2026-01-12T12:00:00.000Z');
+    const dayFive = new Date('2026-01-14T12:00:00.000Z');
 
-    // Start with 40,000 gift and last gift 3 days ago
-    await pool.query(
-      "UPDATE token_accounts SET gift_tokens = 40000, last_gift_date = CURRENT_DATE - INTERVAL '3 days' WHERE user_id = $1",
+    expect((await awardLoginStreakReward(pool, userId, dayOne)).granted_tokens).toBe(50000);
+    expect((await awardLoginStreakReward(pool, userId, dayTwo)).granted_tokens).toBe(100000);
+    const third = await awardLoginStreakReward(pool, userId, dayThree);
+    expect(third.streak_days).toBe(3);
+    expect(third.granted_tokens).toBe(150000);
+    const reset = await awardLoginStreakReward(pool, userId, dayFive);
+    expect(reset.streak_days).toBe(1);
+    expect(reset.granted_tokens).toBe(50000);
+
+    const account = await pool.query<{ gift_tokens: number; login_streak_days: number }>(
+      'SELECT gift_tokens, login_streak_days FROM token_accounts WHERE user_id = $1',
       [userId]
     );
+    expect(account.rows[0]).toEqual({ gift_tokens: 350000, login_streak_days: 1 });
+  });
 
-    const token = await login(app, 'cross_day_user', 'secret123');
+  it('caps streak rewards at one million and adds rewards to a negative gift balance', async () => {
+    const userId = await createTestUser(pool, 'streak_cap_user');
+    await pool.query(
+      "UPDATE token_accounts SET gift_tokens = 950000, login_streak_days = 3, last_login_reward_date = DATE '2026-01-10' WHERE user_id = $1",
+      [userId]
+    );
+    const capped = await awardLoginStreakReward(pool, userId, new Date('2026-01-11T12:00:00.000Z'));
+    expect(capped.reward_tokens).toBe(200000);
+    expect(capped.granted_tokens).toBe(50000);
+    expect(capped.account.gift_tokens).toBe(1000000);
+
+    await pool.query(
+      "UPDATE token_accounts SET gift_tokens = -2000, login_streak_days = 1, last_login_reward_date = DATE '2026-01-11' WHERE user_id = $1",
+      [userId]
+    );
+    const negative = await awardLoginStreakReward(pool, userId, new Date('2026-01-12T12:00:00.000Z'));
+    expect(negative.granted_tokens).toBe(100000);
+    expect(negative.account.gift_tokens).toBe(98000);
+  });
+
+  it('does not grant rewards when an account is merely read or listed by an admin', async () => {
+    const app = await buildApp(pool);
+    const adminId = await createTestUser(pool, 'test_admin', 'admin');
+    const userId = await createTestUser(pool, 'read_only_user');
+    const adminToken = signToken({ id: adminId, username: 'test_admin', role: 'admin' });
+    const userToken = signToken({ id: userId, username: 'read_only_user', role: 'user' });
 
     const accountResponse = await app.inject({
       method: 'GET',
       url: '/api/token-account',
-      headers: { Authorization: `Bearer ${token}` },
+      headers: { Authorization: `Bearer ${userToken}` },
     });
+    expect(accountResponse.statusCode).toBe(200);
+    expect((JSON.parse(accountResponse.body) as { gift_tokens: number }).gift_tokens).toBe(0);
 
-    const account = JSON.parse(accountResponse.body) as { gift_tokens: number };
-    // 3 days * 50,000 = 150,000 possible, capped at 100,000
-    expect(account.gift_tokens).toBe(100000);
-
-    const ledgerResponse = await app.inject({
+    const usersResponse = await app.inject({
       method: 'GET',
-      url: '/api/token-account/ledger',
-      headers: { Authorization: `Bearer ${token}` },
+      url: '/api/admin/users',
+      headers: { Authorization: `Bearer ${adminToken}` },
     });
-    const ledger = JSON.parse(ledgerResponse.body) as Array<{ entry_type: string; delta_tokens: number; note: string }>;
-    const gifts = ledger.filter((e) => e.entry_type === 'daily_gift');
-    expect(gifts.reduce((sum, e) => sum + e.delta_tokens, 0)).toBe(60000);
+    expect(usersResponse.statusCode).toBe(200);
+    const target = (JSON.parse(usersResponse.body) as Array<{ id: string; gift_tokens: number }>).find((user) => user.id === userId);
+    expect(target?.gift_tokens).toBe(0);
   });
 
-  it('caps daily gift at 100,000 when starting from 70,000', async () => {
+  it('counts an authenticated remembered session only through the explicit daily login endpoint', async () => {
     const app = await buildApp(pool);
-    const userId = await createTestUser(pool, 'cap_user');
+    const userId = await createTestUser(pool, 'remembered_session_user');
+    const token = signToken({ id: userId, username: 'remembered_session_user', role: 'user' });
 
-    await pool.query(
-      "UPDATE token_accounts SET gift_tokens = 70000, last_gift_date = CURRENT_DATE - INTERVAL '1 day' WHERE user_id = $1",
-      [userId]
-    );
-
-    const token = await login(app, 'cap_user', 'secret123');
-
-    const accountResponse = await app.inject({
-      method: 'GET',
-      url: '/api/token-account',
+    const rewardResponse = await app.inject({
+      method: 'POST',
+      url: '/api/auth/login-reward',
       headers: { Authorization: `Bearer ${token}` },
     });
+    expect(rewardResponse.statusCode).toBe(200);
+    expect((JSON.parse(rewardResponse.body) as { login_reward: { granted_tokens: number } }).login_reward.granted_tokens).toBe(50000);
 
-    const account = JSON.parse(accountResponse.body) as { gift_tokens: number; recharge_tokens: number };
-    expect(account.gift_tokens).toBe(100000);
-    expect(account.recharge_tokens).toBe(0);
-  });
-
-  it('adds full daily gift to negative gift balance without zeroing first', async () => {
-    const app = await buildApp(pool);
-    const userId = await createTestUser(pool, 'negative_gift_user');
-
-    await pool.query(
-      "UPDATE token_accounts SET gift_tokens = -2000, recharge_tokens = 9999, last_gift_date = CURRENT_DATE - INTERVAL '1 day' WHERE user_id = $1",
-      [userId]
-    );
-
-    const token = await login(app, 'negative_gift_user', 'secret123');
-
-    const accountResponse = await app.inject({
-      method: 'GET',
-      url: '/api/token-account',
+    const repeatedResponse = await app.inject({
+      method: 'POST',
+      url: '/api/auth/login-reward',
       headers: { Authorization: `Bearer ${token}` },
     });
-
-    const account = JSON.parse(accountResponse.body) as { gift_tokens: number; recharge_tokens: number };
-    expect(account.gift_tokens).toBe(48000);
-    expect(account.recharge_tokens).toBe(9999);
-  });
-
-  it('does not double grant daily gift on the same day after multiple reads', async () => {
-    const app = await buildApp(pool);
-    const userId = await createTestUser(pool, 'same_day_repeat_user');
-
-    await pool.query(
-      "UPDATE token_accounts SET gift_tokens = 0, last_gift_date = CURRENT_DATE - INTERVAL '1 day' WHERE user_id = $1",
-      [userId]
-    );
-
-    const token = await login(app, 'same_day_repeat_user', 'secret123');
-
-    for (let i = 0; i < 3; i++) {
-      await app.inject({
-        method: 'GET',
-        url: '/api/token-account',
-        headers: { Authorization: `Bearer ${token}` },
-      });
-    }
-
-    const accountResponse = await app.inject({
-      method: 'GET',
-      url: '/api/token-account',
-      headers: { Authorization: `Bearer ${token}` },
-    });
-
-    const account = JSON.parse(accountResponse.body) as { gift_tokens: number };
-    expect(account.gift_tokens).toBe(50000);
-
-    const ledger = await pool.query<{ entry_type: string }>(
-      'SELECT entry_type FROM token_ledger_entries WHERE user_id = $1 AND entry_type = $2',
-      [userId, 'daily_gift']
-    );
-    expect(ledger.rows).toHaveLength(1);
+    expect((JSON.parse(repeatedResponse.body) as { login_reward: { granted_tokens: number } }).login_reward.granted_tokens).toBe(0);
   });
 
   it('deducts all usage from gift tokens when gift is positive and allows gift to go negative', async () => {
@@ -335,7 +314,7 @@ describe('Token Account Service', () => {
     });
     const account = JSON.parse(accountResponse.body) as { recharge_tokens: number; gift_tokens: number };
     expect(account.recharge_tokens).toBe(10000);
-    expect(account.gift_tokens).toBe(50000); // daily gift also applied on first read
+    expect(account.gift_tokens).toBe(50000); // 登录时已领取首日连续登录奖励
 
     const ledgerResponse = await app.inject({
       method: 'GET',
@@ -347,62 +326,6 @@ describe('Token Account Service', () => {
     expect(rechargeEntry).toBeDefined();
     expect(rechargeEntry?.bucket).toBe('recharge');
     expect(rechargeEntry?.delta_tokens).toBe(10000);
-  });
-
-  it('handles PostgreSQL BIGINT string and caps daily gift at 100000 across two days', async () => {
-    const app = await buildApp(pool);
-    const userId = await createTestUser(pool, 'bigint_user');
-
-    // 模拟 PostgreSQL BIGINT 以字符串形式返回，且上次赠送为两天前
-    await pool.query(
-      "UPDATE token_accounts SET gift_tokens = $1, last_gift_date = CURRENT_DATE - INTERVAL '2 days' WHERE user_id = $2",
-      ['25000', userId]
-    );
-
-    const token = await login(app, 'bigint_user', 'secret123');
-
-    const accountResponse = await app.inject({
-      method: 'GET',
-      url: '/api/token-account',
-      headers: { Authorization: `Bearer ${token}` },
-    });
-
-    expect(accountResponse.statusCode).toBe(200);
-    const account = JSON.parse(accountResponse.body) as { gift_tokens: number };
-    expect(account.gift_tokens).toBe(100000);
-
-    const ledger = await pool.query<{ entry_type: string; delta_tokens: number }>(
-      'SELECT entry_type, delta_tokens FROM token_ledger_entries WHERE user_id = $1 ORDER BY created_at ASC',
-      [userId]
-    );
-    const gifts = ledger.rows.filter((e) => e.entry_type === 'daily_gift');
-    expect(gifts).toHaveLength(2);
-    expect(gifts[0].delta_tokens).toBe(50000);
-    expect(gifts[1].delta_tokens).toBe(25000);
-  });
-
-  it('triggers daily gift make-up when admin lists users', async () => {
-    const app = await buildApp(pool);
-    await createTestUser(pool, 'test_admin', 'admin');
-    const userId = await createTestUser(pool, 'gift_target');
-    await pool.query(
-      "UPDATE token_accounts SET gift_tokens = 0, last_gift_date = CURRENT_DATE - INTERVAL '1 day' WHERE user_id = $1",
-      [userId]
-    );
-
-    const adminToken = await login(app, 'test_admin', 'secret123');
-
-    const usersResponse = await app.inject({
-      method: 'GET',
-      url: '/api/admin/users',
-      headers: { Authorization: `Bearer ${adminToken}` },
-    });
-
-    expect(usersResponse.statusCode).toBe(200);
-    const users = JSON.parse(usersResponse.body) as Array<{ id: string; gift_tokens: number }>;
-    const target = users.find((u) => u.id === userId);
-    expect(target).toBeDefined();
-    expect(target?.gift_tokens).toBe(50000);
   });
 
   it('prevents non-admin users from accessing admin endpoints', async () => {
