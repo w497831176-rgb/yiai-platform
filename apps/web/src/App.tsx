@@ -2352,6 +2352,48 @@ export function LegacyAdminAppsTab() {
   );
 }
 
+type AdminListToggleField = 'enabled' | 'supports_images';
+
+function AdminBooleanSwitch({
+  label,
+  checked,
+  checkedLabel,
+  uncheckedLabel,
+  onChange,
+  updating = false,
+  readOnly = false,
+}: {
+  label: string;
+  checked: boolean;
+  checkedLabel: string;
+  uncheckedLabel: string;
+  onChange?: () => void;
+  updating?: boolean;
+  readOnly?: boolean;
+}) {
+  const valueLabel = checked ? checkedLabel : uncheckedLabel;
+
+  return (
+    <button
+      type="button"
+      className={`admin-boolean-switch ${checked ? 'is-on' : 'is-off'}`}
+      role="switch"
+      aria-label={`${label}：${valueLabel}`}
+      aria-checked={checked}
+      aria-readonly={readOnly || undefined}
+      aria-busy={updating || undefined}
+      disabled={updating || readOnly}
+      onClick={onChange}
+      title={readOnly ? '由 YIAI 表单自动识别；点击“同步 YIAI”更新' : `点击切换为 ${checked ? uncheckedLabel : checkedLabel}`}
+    >
+      <span className="admin-boolean-switch-track">
+        <span className="admin-boolean-switch-knob" aria-hidden="true" />
+        <span className="admin-boolean-switch-value">{valueLabel}</span>
+      </span>
+    </button>
+  );
+}
+
 function AdminAppsTab() {
   const [apps, setApps] = useState<AdminApp[]>([]);
   const [creating, setCreating] = useState(false);
@@ -2361,6 +2403,7 @@ function AdminAppsTab() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
   const [message, setMessage] = useState('');
+  const [togglingKey, setTogglingKey] = useState<string | null>(null);
   const [createForm, setCreateForm] = useState({
     slug: '',
     app_type: 'chatflow' as 'chatflow' | 'agent',
@@ -2470,6 +2513,32 @@ function AdminAppsTab() {
         await loadApps();
       } catch (err: unknown) {
         setError(err instanceof Error ? err.message : '同步失败');
+      }
+    })();
+  };
+
+  const handleListToggle = (app: AdminApp, field: AdminListToggleField) => {
+    const nextValue = !app[field];
+    const key = `${app.id}:${field}`;
+    const fieldLabel = field === 'enabled' ? '启用状态' : '图片上传';
+    setError('');
+    setMessage('');
+    setTogglingKey(key);
+
+    void (async () => {
+      try {
+        await api<Partial<AdminApp>>(`/admin/apps/${app.id}`, {
+          method: 'PATCH',
+          body: JSON.stringify({ [field]: nextValue }),
+        });
+        setApps((previous) => previous.map((item) => (
+          item.id === app.id ? { ...item, [field]: nextValue } : item
+        )));
+        setMessage(`已${nextValue ? '开启' : '关闭'}「${app.name || app.slug}」的${fieldLabel}`);
+      } catch (err: unknown) {
+        setError(err instanceof Error ? err.message : '更新应用状态失败');
+      } finally {
+        setTogglingKey(null);
       }
     })();
   };
@@ -2618,9 +2687,42 @@ function AdminAppsTab() {
                   )}
                   {app.api_key_preview && <code>{app.api_key_preview}</code>}
                 </td>
-                <td>{app.enabled ? '已启用' : '已停用'}</td>
-                <td>{app.supports_images ? '支持' : '不支持'}</td>
-                <td>{app.requires_new_conversation_inputs ? '需要采集信息' : '无需采集'}</td>
+                <td>
+                  <div className="admin-status-cell">
+                    <AdminBooleanSwitch
+                      label={`启用：${app.name || app.slug}`}
+                      checked={app.enabled}
+                      checkedLabel="已启用"
+                      uncheckedLabel="已停用"
+                      updating={togglingKey === `${app.id}:enabled`}
+                      onChange={() => { handleListToggle(app, 'enabled'); }}
+                    />
+                  </div>
+                </td>
+                <td>
+                  <div className="admin-status-cell">
+                    <AdminBooleanSwitch
+                      label={`支持图片：${app.name || app.slug}`}
+                      checked={app.supports_images}
+                      checkedLabel="支持图片"
+                      uncheckedLabel="不支持图片"
+                      updating={togglingKey === `${app.id}:supports_images`}
+                      onChange={() => { handleListToggle(app, 'supports_images'); }}
+                    />
+                  </div>
+                </td>
+                <td>
+                  <div className="admin-status-cell">
+                    <AdminBooleanSwitch
+                      label={`新对话采集：${app.name || app.slug}`}
+                      checked={app.requires_new_conversation_inputs}
+                      checkedLabel="需要采集"
+                      uncheckedLabel="无需采集"
+                      readOnly
+                    />
+                    <small className="admin-status-note">YIAI 自动</small>
+                  </div>
+                </td>
                 <td className="admin-app-actions">
                   <button className="secondary" onClick={() => { setSettingsApp(app); }}>平台设置</button>
                   <button

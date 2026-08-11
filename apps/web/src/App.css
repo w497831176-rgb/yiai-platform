@@ -1128,6 +1128,93 @@ button:disabled {
   font-size: 0.75rem;
 }
 
+.admin-status-cell {
+  display: inline-flex;
+  min-width: 7.2rem;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 0.25rem;
+}
+
+.admin-table td .admin-boolean-switch {
+  margin-right: 0;
+  border: 0;
+  padding: 0;
+  background: transparent;
+  cursor: pointer;
+}
+
+.admin-boolean-switch-track {
+  position: relative;
+  display: inline-flex;
+  min-width: 7.2rem;
+  height: 1.9rem;
+  align-items: center;
+  border: 1px solid #94a3b8;
+  border-radius: 999px;
+  background: #f1f5f9;
+  color: #475569;
+  box-shadow: inset 0 1px 2px rgba(15, 23, 42, 0.08);
+  transition: background 160ms ease, border-color 160ms ease;
+}
+
+.admin-boolean-switch.is-on .admin-boolean-switch-track {
+  border-color: #16a34a;
+  background: #f0fdf4;
+}
+
+.admin-boolean-switch-value {
+  position: relative;
+  z-index: 1;
+  width: 100%;
+  padding: 0 0.55rem 0 2rem;
+  text-align: left;
+  font-size: 0.72rem;
+  font-weight: 700;
+  line-height: 1;
+  white-space: nowrap;
+  transition: color 160ms ease;
+}
+
+.admin-boolean-switch.is-on .admin-boolean-switch-value {
+  color: #15803d;
+}
+
+.admin-boolean-switch-knob {
+  position: absolute;
+  top: 0.18rem;
+  bottom: 0.18rem;
+  left: 0.18rem;
+  width: 1.3rem;
+  border-radius: 999px;
+  background: #fff;
+  box-shadow: 0 1px 3px rgba(15, 23, 42, 0.25);
+  transition: transform 160ms ease;
+}
+
+.admin-boolean-switch.is-on .admin-boolean-switch-knob {
+  transform: translateX(5.54rem);
+}
+
+.admin-boolean-switch:focus-visible .admin-boolean-switch-track {
+  outline: 3px solid rgba(37, 99, 235, 0.32);
+  outline-offset: 2px;
+}
+
+.admin-boolean-switch:disabled {
+  cursor: not-allowed;
+}
+
+.admin-boolean-switch:disabled .admin-boolean-switch-track {
+  opacity: 0.66;
+}
+
+.admin-status-note {
+  color: #64748b;
+  font-size: 0.68rem;
+  line-height: 1.2;
+}
+
 button.danger {
   border-color: #fecaca;
   background: #fff1f2;

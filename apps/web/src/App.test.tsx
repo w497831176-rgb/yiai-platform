@@ -644,6 +644,54 @@ describe('AdminAppsTab', () => {
     });
   });
 
+  it('uses direct labeled switches for enabled and image support, while keeping input collection automatic', async () => {
+    render(<App />);
+
+    await waitFor(() => {
+      expect(screen.getByText('应用中心')).toBeInTheDocument();
+    });
+    fireEvent.click(screen.getByRole('button', { name: '管理后台' }));
+    await waitFor(() => {
+      expect(screen.getByRole('button', { name: '应用管理' })).toBeInTheDocument();
+    });
+    fireEvent.click(screen.getByRole('button', { name: '应用管理' }));
+
+    const enabledSwitch = await screen.findByRole('switch', { name: '启用：Test App：已启用' });
+    const imageSwitch = screen.getByRole('switch', { name: '支持图片：Test App：不支持图片' });
+    const collectionSwitch = screen.getByRole('switch', { name: '新对话采集：Input App：需要采集' });
+
+    expect(enabledSwitch).toHaveAttribute('aria-checked', 'true');
+    expect(imageSwitch).toHaveAttribute('aria-checked', 'false');
+    expect(collectionSwitch).toBeDisabled();
+    expect(collectionSwitch).toHaveAttribute('aria-readonly', 'true');
+    expect(screen.getAllByText('YIAI 自动')).toHaveLength(2);
+
+    fireEvent.click(enabledSwitch);
+    await waitFor(() => {
+      const patchCall = fetchMock.mock.calls.find(([url, init]) => {
+        const callUrl = typeof url === 'string' ? url : url.url;
+        return callUrl.endsWith('/admin/apps/app-1') && init?.method === 'PATCH';
+      });
+      expect(patchCall).toBeDefined();
+      if (!patchCall) return;
+      const [, init] = patchCall as [string | Request, RequestInit];
+      expect(JSON.parse(init.body as string)).toEqual({ enabled: false });
+    });
+    expect(screen.getByRole('switch', { name: '启用：Test App：已停用' })).toHaveAttribute('aria-checked', 'false');
+
+    fireEvent.click(imageSwitch);
+    await waitFor(() => {
+      const patchCalls = fetchMock.mock.calls.filter(([url, init]) => {
+        const callUrl = typeof url === 'string' ? url : url.url;
+        return callUrl.endsWith('/admin/apps/app-1') && init?.method === 'PATCH';
+      });
+      expect(patchCalls).toHaveLength(2);
+      const [, init] = patchCalls[1] as [string | Request, RequestInit];
+      expect(JSON.parse(init.body as string)).toEqual({ supports_images: true });
+    });
+    expect(screen.getByRole('switch', { name: '支持图片：Test App：支持图片' })).toHaveAttribute('aria-checked', 'true');
+  });
+
   it('saves a YIAI connection through the dedicated validation endpoint', async () => {
     render(<App />);
 
