@@ -162,6 +162,32 @@ describe('Token Account Service', () => {
     expect(negative.account.gift_tokens).toBe(98000);
   });
 
+  it('keeps increasing streak reward amounts while a full gift account grants zero', async () => {
+    const userId = await createTestUser(pool, 'full_gift_streak_user');
+    await pool.query(
+      "UPDATE token_accounts SET gift_tokens = 1000000, login_streak_days = 20, last_login_reward_date = DATE '2026-01-11' WHERE user_id = $1",
+      [userId]
+    );
+
+    const dayTwentyOne = await awardLoginStreakReward(pool, userId, new Date('2026-01-12T12:00:00.000Z'));
+    expect(dayTwentyOne.streak_days).toBe(21);
+    expect(dayTwentyOne.reward_tokens).toBe(1050000);
+    expect(dayTwentyOne.granted_tokens).toBe(0);
+    expect(dayTwentyOne.account.gift_tokens).toBe(1000000);
+
+    const dayTwentyTwo = await awardLoginStreakReward(pool, userId, new Date('2026-01-13T12:00:00.000Z'));
+    expect(dayTwentyTwo.streak_days).toBe(22);
+    expect(dayTwentyTwo.reward_tokens).toBe(1100000);
+    expect(dayTwentyTwo.granted_tokens).toBe(0);
+    expect(dayTwentyTwo.account.gift_tokens).toBe(1000000);
+
+    const ledger = await pool.query(
+      "SELECT id FROM token_ledger_entries WHERE user_id = $1 AND entry_type = 'login_streak_gift'",
+      [userId]
+    );
+    expect(ledger.rowCount).toBe(0);
+  });
+
   it('does not grant rewards when an account is merely read or listed by an admin', async () => {
     const app = await buildApp(pool);
     const adminId = await createTestUser(pool, 'test_admin', 'admin');

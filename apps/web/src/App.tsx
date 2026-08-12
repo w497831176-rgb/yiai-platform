@@ -754,7 +754,15 @@ function AppHub({
         )}
         {account && (
           <p className="token-hint">
-            连续登录第 {account.login_streak_days} 天；下次登录最多可领 +{((account.login_streak_days + 1) * account.login_reward_base).toLocaleString()} Tokens。赠送余额上限 {account.gift_tokens_max.toLocaleString()} Tokens
+            {account.login_streak_days > 0 ? (
+              <>
+                已连续登录第 {account.login_streak_days} 天。明天继续登录，第 {account.login_streak_days + 1} 天奖励额度为 {((account.login_streak_days + 1) * account.login_reward_base).toLocaleString()} Tokens；连续登录时每日奖励增加 {account.login_reward_base.toLocaleString()} Tokens，若中断则下次从第 1 天 {account.login_reward_base.toLocaleString()} Tokens 重新计算。仅在登录或当天首次恢复登录状态时发放；实际到账不超过赠送余额的剩余空间，赠送余额最高 {account.gift_tokens_max.toLocaleString()} Tokens。
+              </>
+            ) : (
+              <>
+                下次登录从第 1 天开始，奖励额度为 {account.login_reward_base.toLocaleString()} Tokens；连续登录时每日奖励增加 {account.login_reward_base.toLocaleString()} Tokens，若中断则重新从第 1 天计算。仅在登录或当天首次恢复登录状态时发放；实际到账不超过赠送余额的剩余空间，赠送余额最高 {account.gift_tokens_max.toLocaleString()} Tokens。
+              </>
+            )}
           </p>
         )}
         {tags.length > 0 && (

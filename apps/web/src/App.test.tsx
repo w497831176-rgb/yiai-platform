@@ -88,6 +88,45 @@ describe('AppHub', () => {
 
     expect(screen.getByText('Test App')).toBeInTheDocument();
     expect(screen.getByText('测试应用说明')).toBeInTheDocument();
+    expect(screen.getByText(
+      '下次登录从第 1 天开始，奖励额度为 50,000 Tokens；连续登录时每日奖励增加 50,000 Tokens，若中断则重新从第 1 天计算。仅在登录或当天首次恢复登录状态时发放；实际到账不超过赠送余额的剩余空间，赠送余额最高 1,000,000 Tokens。'
+    )).toBeInTheDocument();
+    expect(screen.queryByText(/连续登录第 0 天/)).not.toBeInTheDocument();
+  });
+
+  it('explains the next consecutive reward without implying a reward cap', async () => {
+    const originalMock = fetchMock.getMockImplementation();
+    fetchMock.mockImplementation((input, init) => {
+      const url = typeof input === 'string' ? input : input.url;
+      if (url.endsWith('/token-account')) {
+        return Promise.resolve(
+          new Response(
+            JSON.stringify({
+              gift_tokens: 950_000,
+              recharge_tokens: 50,
+              login_reward_base: 50_000,
+              gift_tokens_max: 1_000_000,
+              login_streak_days: 2,
+              last_login_reward_date: '2026-08-12',
+            })
+          )
+        );
+      }
+      return originalMock?.(input, init) ?? Promise.reject(new Error(`Unexpected fetch: ${url}`));
+    });
+
+    try {
+      render(<App />);
+
+      expect(await screen.findByText(
+        '已连续登录第 2 天。明天继续登录，第 3 天奖励额度为 150,000 Tokens；连续登录时每日奖励增加 50,000 Tokens，若中断则下次从第 1 天 50,000 Tokens 重新计算。仅在登录或当天首次恢复登录状态时发放；实际到账不超过赠送余额的剩余空间，赠送余额最高 1,000,000 Tokens。'
+      )).toBeInTheDocument();
+      expect(screen.queryByText(/最多可领/)).not.toBeInTheDocument();
+    } finally {
+      if (originalMock) {
+        fetchMock.mockImplementation(originalMock);
+      }
+    }
   });
 
   it('filters app cards by tags', async () => {
