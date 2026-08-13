@@ -298,6 +298,94 @@ describe('AdminAppsTab', () => {
       );
     }
 
+    if (url.endsWith('/admin/users') && method === 'GET') {
+      return Promise.resolve(
+        new Response(JSON.stringify([
+          {
+            id: 'user-1',
+            username: 'tester',
+            role: 'user',
+            gift_tokens: 100,
+            recharge_tokens: 50,
+            created_at: '2026-08-01T00:00:00Z',
+          },
+        ]))
+      );
+    }
+
+    if (url.endsWith('/admin/users/user-1/ledger') && method === 'GET') {
+      return Promise.resolve(
+        new Response(JSON.stringify([
+          {
+            id: 'ledger-usage-1',
+            created_at: '2026-08-13T03:00:00Z',
+            entry_type: 'usage',
+            bucket: 'gift',
+            delta_tokens: -120,
+            note: '使用消耗',
+            app_name: '循证西医',
+            ai_reply_available: true,
+          },
+          {
+            id: 'ledger-gift-1',
+            created_at: '2026-08-13T02:00:00Z',
+            entry_type: 'login_streak_gift',
+            bucket: 'gift',
+            delta_tokens: 50000,
+            note: '连续登录奖励',
+            app_name: null,
+            ai_reply_available: false,
+          },
+        ]))
+      );
+    }
+
+    if (url.includes('/admin/usage-records?') && method === 'GET') {
+      return Promise.resolve(
+        new Response(JSON.stringify({
+          items: [
+            {
+              id: 'ledger-usage-1',
+              username: 'tester',
+              created_at: '2026-08-13T03:00:00Z',
+              entry_type: 'usage',
+              bucket: 'gift',
+              delta_tokens: -120,
+              note: '使用消耗',
+              app_name: '循证西医',
+              ai_reply_available: true,
+            },
+            {
+              id: 'ledger-usage-2',
+              username: 'friend',
+              created_at: '2026-08-13T02:30:00Z',
+              entry_type: 'usage',
+              bucket: 'recharge',
+              delta_tokens: -80,
+              note: '使用消耗',
+              app_name: '哲学助手',
+              ai_reply_available: false,
+            },
+          ],
+          total: 2,
+          page: 1,
+          page_size: 50,
+        }))
+      );
+    }
+
+    if (url.endsWith('/admin/usage-records/ledger-usage-1/ai-reply') && method === 'GET') {
+      return Promise.resolve(
+        new Response(JSON.stringify({
+          ledger_entry_id: 'ledger-usage-1',
+          username: 'tester',
+          app_name: '循证西医',
+          created_at: '2026-08-13T03:00:00Z',
+          answer: '<think>隐藏思考</think>## 可见回复\n\n- 第一项',
+        }))
+      );
+    }
+
     if (url.endsWith('/apps') && method === 'GET' && !url.includes('/admin')) {
       return Promise.resolve(
         new Response(
@@ -385,6 +473,93 @@ describe('AdminAppsTab', () => {
   afterEach(() => {
     vi.unstubAllGlobals();
     localStorage.removeItem(TOKEN_KEY);
+  });
+
+  it('shows the fourth consumption tab and reuses AI reply details in user and global ledgers', async () => {
+    render(<App />);
+    await screen.findByText('应用中心');
+    fireEvent.click(screen.getByRole('button', { name: '管理后台' }));
+
+    expect(await screen.findByRole('button', { name: '用户与余额' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: '应用管理' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: '意见反馈' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: '全部消耗记录' })).toBeInTheDocument();
+
+    fireEvent.click(await screen.findByRole('button', { name: '账本' }));
+    expect(await screen.findByText('循证西医')).toBeInTheDocument();
+    const userReplyButton = screen.getByRole('button', { name: '查看AI详细回复' });
+    expect(userReplyButton).toBeInTheDocument();
+    expect(fetchMock.mock.calls.some(([input]) => {
+      const url = typeof input === 'string' ? input : input.url;
+      return url.endsWith('/admin/usage-records/ledger-usage-1/ai-reply');
+    })).toBe(false);
+
+    fireEvent.click(userReplyButton);
+    expect(await screen.findByRole('heading', { name: '可见回复' })).toBeInTheDocument();
+    expect(screen.getByText('第一项')).toBeInTheDocument();
+    expect(screen.queryByText('隐藏思考')).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: '关闭AI详细回复' }));
+    fireEvent.click(screen.getByRole('button', { name: '关闭' }));
+
+    fireEvent.click(screen.getByRole('button', { name: '全部消耗记录' }));
+    expect(await screen.findByText('friend')).toBeInTheDocument();
+    expect(screen.getByText('哲学助手')).toBeInTheDocument();
+    expect(screen.getByText('回复不可用')).toBeInTheDocument();
+    expect(screen.getByText('共 2 条')).toBeInTheDocument();
+  });
+
+  it('clears the previous user ledger while another user ledger is loading', async () => {
+    let resolveSecondLedger: ((response: Response) => void) | undefined;
+    const defaultImplementation = fetchMock.getMockImplementation();
+    try {
+      fetchMock.mockImplementation((input, init) => {
+        const url = typeof input === 'string' ? input : input.url;
+        if (url.endsWith('/admin/users') && (init?.method ?? 'GET') === 'GET') {
+          return Promise.resolve(new Response(JSON.stringify([
+            {
+              id: 'user-1', username: 'first', role: 'user', gift_tokens: 1, recharge_tokens: 0,
+              created_at: '2026-08-01T00:00:00Z',
+            },
+            {
+              id: 'user-2', username: 'second', role: 'user', gift_tokens: 1, recharge_tokens: 0,
+              created_at: '2026-08-02T00:00:00Z',
+            },
+          ])));
+        }
+        if (url.endsWith('/admin/users/user-1/ledger')) {
+          return Promise.resolve(new Response(JSON.stringify([
+            {
+              id: 'first-ledger', created_at: '2026-08-13T03:00:00Z', entry_type: 'usage',
+              bucket: 'gift', delta_tokens: -10, note: '使用消耗', app_name: '用户一应用',
+              ai_reply_available: false,
+            },
+          ])));
+        }
+        if (url.endsWith('/admin/users/user-2/ledger')) {
+          return new Promise<Response>((resolve) => {
+            resolveSecondLedger = resolve;
+          });
+        }
+        return defaultImplementation?.(input, init) ?? Promise.reject(new Error(`Unexpected fetch: ${url}`));
+      });
+
+      render(<App />);
+      await screen.findByText('应用中心');
+      fireEvent.click(screen.getByRole('button', { name: '管理后台' }));
+      const ledgerButtons = await screen.findAllByRole('button', { name: '账本' });
+
+      fireEvent.click(ledgerButtons[0]);
+      expect(await screen.findByText('用户一应用')).toBeInTheDocument();
+      fireEvent.click(screen.getByRole('button', { name: '关闭' }));
+      fireEvent.click(ledgerButtons[1]);
+
+      expect(screen.getByText('加载中...')).toBeInTheDocument();
+      expect(screen.queryByText('用户一应用')).not.toBeInTheDocument();
+      resolveSecondLedger?.(new Response(JSON.stringify([])));
+      expect(await screen.findByText('暂无明细')).toBeInTheDocument();
+    } finally {
+      if (defaultImplementation) fetchMock.mockImplementation(defaultImplementation);
+    }
   });
 
   it('has "新增应用" button and submits a Chatflow body', async () => {

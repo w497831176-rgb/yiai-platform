@@ -590,6 +590,206 @@ describe('Admin Routes', () => {
     expect(newLogin.statusCode).toBe(200);
   });
 
+  it('adds app and AI reply metadata to user ledgers and merges all user consumption records', async () => {
+    const app = await buildApp(pool);
+    await createTestUser(pool, 'admin_user', 'admin', 'testpass');
+    const firstUserId = await createTestUser(pool, 'first_user');
+    const secondUserId = await createTestUser(pool, 'second_user');
+    const appId = await createTestApp(pool, { slug: 'medical-app', name: '循证西医' });
+
+    const firstUsage = await pool.query<{ id: string }>(
+      `INSERT INTO yiai_usage_records
+       (user_id, app_id, conversation_id, message_id, task_id, total_tokens)
+       VALUES ($1, $2, 'conversation-1', 'message-1', 'task-1', 120)
+       RETURNING id`,
+      [firstUserId, appId]
+    );
+    const secondUsage = await pool.query<{ id: string }>(
+      `INSERT INTO yiai_usage_records
+       (user_id, app_id, conversation_id, message_id, task_id, total_tokens)
+       VALUES ($1, $2, 'conversation-2', 'message-2', 'task-2', 80)
+       RETURNING id`,
+      [secondUserId, appId]
+    );
+    await pool.query(
+      `INSERT INTO token_ledger_entries
+       (user_id, delta_tokens, bucket, entry_type, usage_record_id, note, created_at)
+       VALUES
+         ($1, -120, 'gift', 'usage', $2, '使用消耗', '2026-08-13T02:00:00Z'),
+         ($3, -80, 'recharge', 'usage', $4, '使用消耗', '2026-08-13T03:00:00Z'),
+         ($1, 50000, 'gift', 'login_streak_gift', NULL, '连续登录奖励', '2026-08-13T04:00:00Z')`,
+      [firstUserId, firstUsage.rows[0].id, secondUserId, secondUsage.rows[0].id]
+    );
+
+    const token = await login(app, 'admin_user', 'testpass');
+    const ledgerResponse = await app.inject({
+      method: 'GET',
+      url: `/api/admin/users/${firstUserId}/ledger`,
+      headers: { Authorization: `Bearer ${token}` },
+    });
+    expect(ledgerResponse.statusCode).toBe(200);
+    expect(JSON.parse(ledgerResponse.body)).toEqual([
+      expect.objectContaining({
+        entry_type: 'login_streak_gift',
+        app_name: null,
+        ai_reply_available: false,
+      }),
+      expect.objectContaining({
+        entry_type: 'usage',
+        delta_tokens: -120,
+        app_name: '循证西医',
+        ai_reply_available: true,
+      }),
+    ]);
+
+    const allResponse = await app.inject({
+      method: 'GET',
+      url: '/api/admin/usage-records?page=1&page_size=50',
+      headers: { Authorization: `Bearer ${token}` },
+    });
+    expect(allResponse.statusCode).toBe(200);
+    const allBody = JSON.parse(allResponse.body) as {
+      items: Array<{ username: string; delta_tokens: number; app_name: string }>;
+      total: number;
+      page: number;
+      page_size: number;
+    };
+    expect(allBody).toMatchObject({ total: 2, page: 1, page_size: 50 });
+    expect(allBody.items).toEqual([
+      expect.objectContaining({ username: 'second_user', delta_tokens: -80, app_name: '循证西医' }),
+      expect.objectContaining({ username: 'first_user', delta_tokens: -120, app_name: '循证西医' }),
+    ]);
+    await app.close();
+  });
+
+  it('loads an AI reply only when an admin requests a consumption detail', async () => {
+    const app = await buildApp(pool);
+    await createTestUser(pool, 'admin_user', 'admin', 'testpass');
+    const targetUserId = await createTestUser(pool, 'target_user');
+    const appId = await createTestApp(pool, {
+      slug: 'reply-app',
+      name: 'Reply App',
+      api_base_url: 'https://yiai.example.com/v1',
+      api_key: 'reply-key',
+      enabled: false,
+    });
+    const usage = await pool.query<{ id: string }>(
+      `INSERT INTO yiai_usage_records
+       (user_id, app_id, conversation_id, message_id, task_id, total_tokens)
+       VALUES ($1, $2, 'conversation-old', 'message-target', 'task-target', 25)
+       RETURNING id`,
+      [targetUserId, appId]
+    );
+    const ledger = await pool.query<{ id: string }>(
+      `INSERT INTO token_ledger_entries
+       (user_id, delta_tokens, bucket, entry_type, usage_record_id, note)
+       VALUES ($1, -25, 'gift', 'usage', $2, '使用消耗')
+       RETURNING id`,
+      [targetUserId, usage.rows[0].id]
+    );
+    const token = await login(app, 'admin_user', 'testpass');
+
+    const listResponse = await app.inject({
+      method: 'GET',
+      url: '/api/admin/usage-records',
+      headers: { Authorization: `Bearer ${token}` },
+    });
+    expect(listResponse.statusCode).toBe(200);
+    expect(fetchMock).not.toHaveBeenCalled();
+
+    fetchMock
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({
+          data: [
+            {
+              id: 'message-page-first',
+              conversation_id: 'conversation-old',
+              query: 'older question on the current page',
+              answer: 'older answer on the current page',
+              created_at: 2,
+            },
+            {
+              id: 'message-newer',
+              conversation_id: 'conversation-old',
+              query: 'newer question',
+              answer: 'newer answer',
+              created_at: 3,
+            },
+          ],
+          has_more: true,
+        }))
+      )
+      .mockResolvedValueOnce(
+      new Response(JSON.stringify({
+        data: [{
+          id: 'message-target',
+          conversation_id: 'conversation-old',
+          query: 'question',
+          answer: '<think>hidden</think>**Visible answer**',
+          created_at: 1,
+        }],
+        has_more: false,
+      }))
+      );
+    const detailResponse = await app.inject({
+      method: 'GET',
+      url: `/api/admin/usage-records/${ledger.rows[0].id}/ai-reply`,
+      headers: { Authorization: `Bearer ${token}` },
+    });
+    expect(detailResponse.statusCode).toBe(200);
+    expect(JSON.parse(detailResponse.body)).toMatchObject({
+      username: 'target_user',
+      app_name: 'Reply App',
+      answer: '<think>hidden</think>**Visible answer**',
+    });
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(fetchMock.mock.calls[0][0]).toContain('/messages?');
+    expect(fetchMock.mock.calls[0][0]).toContain('user=yiai-platform-');
+    expect(fetchMock.mock.calls[0][0]).toContain('conversation_id=conversation-old');
+    expect(fetchMock.mock.calls[1][0]).toContain('first_id=message-page-first');
+    expect((fetchMock.mock.calls[0][1]?.headers as Record<string, string>).Authorization).toBe('Bearer reply-key');
+    await app.close();
+  });
+
+  it('keeps consumption rows visible when their historical usage link has been removed', async () => {
+    const app = await buildApp(pool);
+    await createTestUser(pool, 'admin_user', 'admin', 'testpass');
+    const targetUserId = await createTestUser(pool, 'target_user');
+    const ledger = await pool.query<{ id: string }>(
+      `INSERT INTO token_ledger_entries
+       (user_id, delta_tokens, bucket, entry_type, usage_record_id, note)
+       VALUES ($1, -25, 'gift', 'usage', NULL, '使用消耗')
+       RETURNING id`,
+      [targetUserId]
+    );
+    const token = await login(app, 'admin_user', 'testpass');
+
+    const listResponse = await app.inject({
+      method: 'GET',
+      url: '/api/admin/usage-records',
+      headers: { Authorization: `Bearer ${token}` },
+    });
+    expect(listResponse.statusCode).toBe(200);
+    expect(JSON.parse(listResponse.body)).toMatchObject({
+      total: 1,
+      items: [{
+        id: ledger.rows[0].id,
+        username: 'target_user',
+        app_name: null,
+        ai_reply_available: false,
+      }],
+    });
+
+    const detailResponse = await app.inject({
+      method: 'GET',
+      url: `/api/admin/usage-records/${ledger.rows[0].id}/ai-reply`,
+      headers: { Authorization: `Bearer ${token}` },
+    });
+    expect(detailResponse.statusCode).toBe(410);
+    expect(fetchMock).not.toHaveBeenCalled();
+    await app.close();
+  });
+
   it('rejects a too-short admin password reset', async () => {
     const app = await buildApp(pool);
     await createTestUser(pool, 'admin_user', 'admin', 'testpass');
@@ -633,6 +833,8 @@ describe('Admin Routes', () => {
     const endpoints = [
       { method: 'GET' as const, url: '/api/admin/users' },
       { method: 'GET' as const, url: `/api/admin/users/${userId}/ledger` },
+      { method: 'GET' as const, url: '/api/admin/usage-records' },
+      { method: 'GET' as const, url: '/api/admin/usage-records/not-allowed/ai-reply' },
       { method: 'POST' as const, url: `/api/admin/users/${userId}/recharge`, payload: { amount: 100 } },
       { method: 'PUT' as const, url: `/api/admin/users/${userId}/password`, payload: { newPassword: 'newpass123' } },
       { method: 'GET' as const, url: '/api/admin/apps' },

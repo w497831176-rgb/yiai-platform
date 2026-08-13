@@ -27,6 +27,42 @@ export interface TokenLedgerEntry {
   created_at: Date;
 }
 
+export interface AdminLedgerEntry extends TokenLedgerEntry {
+  username: string;
+  app_name: string | null;
+  ai_reply_available: boolean;
+}
+
+interface AdminLedgerRow extends TokenLedgerEntry {
+  username: string;
+  app_name: string | null;
+  usage_app_id: string | null;
+  usage_conversation_id: string | null;
+  usage_message_id: string | null;
+}
+
+export interface AdminUsageLedgerPage {
+  items: AdminLedgerEntry[];
+  total: number;
+  page: number;
+  page_size: number;
+}
+
+export interface AdminUsageReplyTarget {
+  id: string;
+  user_id: string;
+  username: string;
+  entry_type: TokenLedgerEntry['entry_type'];
+  delta_tokens: number;
+  created_at: Date;
+  usage_record_id: string | null;
+  app_name: string | null;
+  api_base_url: string | null;
+  api_key: string | null;
+  conversation_id: string | null;
+  message_id: string | null;
+}
+
 function toNumber(value: unknown): number {
   if (typeof value === 'number') {
     return value;
@@ -52,6 +88,36 @@ function normalizeLedgerEntry(row: TokenLedgerEntry): TokenLedgerEntry {
     delta_tokens: toNumber(row.delta_tokens),
   };
 }
+
+function normalizeAdminLedgerEntry(row: AdminLedgerRow): AdminLedgerEntry {
+  const normalized = normalizeLedgerEntry(row);
+  return {
+    ...normalized,
+    username: row.username,
+    app_name: row.app_name,
+    ai_reply_available:
+      row.entry_type === 'usage' &&
+      row.delta_tokens < 0 &&
+      row.usage_record_id !== null &&
+      row.usage_app_id !== null &&
+      row.usage_conversation_id !== null &&
+      row.usage_message_id !== null,
+  };
+}
+
+const ADMIN_LEDGER_SELECT = `
+  SELECT
+    e.*,
+    u.username,
+    a.name AS app_name,
+    ur.app_id AS usage_app_id,
+    ur.conversation_id AS usage_conversation_id,
+    ur.message_id AS usage_message_id
+  FROM token_ledger_entries e
+  JOIN users u ON u.id = e.user_id
+  LEFT JOIN yiai_usage_records ur ON ur.id = e.usage_record_id
+  LEFT JOIN yiai_apps a ON a.id = ur.app_id
+`;
 
 export function getShanghaiDateString(date: Date): string {
   const parts = new Intl.DateTimeFormat('en-US', {
@@ -287,6 +353,75 @@ export async function getLedgerEntries(pool: Pool, userId: string): Promise<Toke
     [userId]
   );
   return result.rows.map(normalizeLedgerEntry);
+}
+
+export async function getAdminLedgerEntries(pool: Pool, userId: string): Promise<AdminLedgerEntry[]> {
+  const result = await pool.query<AdminLedgerRow>(
+    `${ADMIN_LEDGER_SELECT}
+     WHERE e.user_id = $1
+     ORDER BY e.created_at DESC, e.id DESC`,
+    [userId]
+  );
+  return result.rows.map(normalizeAdminLedgerEntry);
+}
+
+export async function getAllUsageLedgerEntries(
+  pool: Pool,
+  page: number,
+  pageSize: number
+): Promise<AdminUsageLedgerPage> {
+  const offset = (page - 1) * pageSize;
+  const [entriesResult, countResult] = await Promise.all([
+    pool.query<AdminLedgerRow>(
+      `${ADMIN_LEDGER_SELECT}
+       WHERE e.entry_type = 'usage' AND e.delta_tokens < 0
+       ORDER BY e.created_at DESC, e.id DESC
+       LIMIT $1 OFFSET $2`,
+      [pageSize, offset]
+    ),
+    pool.query<{ total: string | number }>(
+      `SELECT COUNT(*) AS total
+       FROM token_ledger_entries
+       WHERE entry_type = 'usage' AND delta_tokens < 0`
+    ),
+  ]);
+
+  return {
+    items: entriesResult.rows.map(normalizeAdminLedgerEntry),
+    total: toNumber(countResult.rows[0]?.total ?? 0),
+    page,
+    page_size: pageSize,
+  };
+}
+
+export async function getAdminUsageReplyTarget(
+  pool: Pool,
+  ledgerEntryId: string
+): Promise<AdminUsageReplyTarget | undefined> {
+  const result = await pool.query<AdminUsageReplyTarget>(
+    `SELECT
+       e.id,
+       e.user_id,
+       u.username,
+       e.entry_type,
+       e.delta_tokens,
+       e.created_at,
+       e.usage_record_id,
+       a.name AS app_name,
+       a.api_base_url,
+       a.api_key,
+       ur.conversation_id,
+       ur.message_id
+     FROM token_ledger_entries e
+     JOIN users u ON u.id = e.user_id
+     LEFT JOIN yiai_usage_records ur ON ur.id = e.usage_record_id
+     LEFT JOIN yiai_apps a ON a.id = ur.app_id
+     WHERE e.id = $1`,
+    [ledgerEntryId]
+  );
+  const row = result.rows.at(0);
+  if (!row) return undefined;
+  return { ...row, delta_tokens: toNumber(row.delta_tokens) };
 }
 
 export async function getAllUserAccounts(

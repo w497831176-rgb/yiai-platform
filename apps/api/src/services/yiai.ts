@@ -25,6 +25,7 @@ interface YiaiApiResponse<T> {
   total?: number;
   page?: number;
   limit?: number;
+  has_more?: boolean;
 }
 
 interface YiaiInfoResponse {
@@ -111,6 +112,47 @@ export class YiaiUpstreamError extends Error {
 
 function getUpstreamUserId(userId: string): string {
   return `yiai-platform-${userId}`;
+}
+
+export interface AdminUsageReplyTargetInput {
+  apiBaseUrl: string;
+  apiKey: string;
+  userId: string;
+  conversationId: string;
+  messageId: string;
+}
+
+export async function getAdminUsageReply(target: AdminUsageReplyTargetInput): Promise<YiaiMessage | undefined> {
+  const baseUrl = target.apiBaseUrl.replace(/\/$/, '');
+  const upstreamUserId = getUpstreamUserId(target.userId);
+  let firstId: string | undefined;
+  const seenFirstIds = new Set<string>();
+  const maxPages = 1000;
+
+  for (let page = 0; page < maxPages; page += 1) {
+    const searchParams = new URLSearchParams({
+      user: upstreamUserId,
+      conversation_id: target.conversationId,
+      limit: '100',
+    });
+    if (firstId) searchParams.set('first_id', firstId);
+
+    const response = await yiaiGet<YiaiApiResponse<YiaiMessage>>(
+      `${baseUrl}/messages?${searchParams.toString()}`,
+      target.apiKey
+    );
+    const messages = response.data ?? [];
+    const matched = messages.find((message) => message.id === target.messageId);
+    if (matched) return matched;
+
+    if (!response.has_more || messages.length === 0) return undefined;
+    const nextFirstId = messages.at(0)?.id;
+    if (!nextFirstId || seenFirstIds.has(nextFirstId)) return undefined;
+    seenFirstIds.add(nextFirstId);
+    firstId = nextFirstId;
+  }
+
+  return undefined;
 }
 
 function isValidIconType(value: unknown): value is 'image' | 'emoji' {

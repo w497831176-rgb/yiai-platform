@@ -125,6 +125,24 @@ interface LedgerEntry {
   bucket: 'gift' | 'recharge';
   delta_tokens: number;
   note: string | null;
+  username?: string;
+  app_name?: string | null;
+  ai_reply_available?: boolean;
+}
+
+interface AdminUsagePage {
+  items: LedgerEntry[];
+  total: number;
+  page: number;
+  page_size: number;
+}
+
+interface AdminUsageReply {
+  ledger_entry_id: string;
+  username: string;
+  app_name: string | null;
+  created_at: string;
+  answer: string;
 }
 
 interface AdminUser {
@@ -1927,6 +1945,101 @@ function formatDelta(delta: number): string {
   return `${sign}${delta.toLocaleString()}`;
 }
 
+function UsageReplyModal({ entry, onClose }: { entry: LedgerEntry; onClose: () => void }) {
+  const [reply, setReply] = useState<AdminUsageReply | null>(null);
+  const [error, setError] = useState('');
+
+  useEffect(() => {
+    let active = true;
+    api<AdminUsageReply>(`/admin/usage-records/${entry.id}/ai-reply`)
+      .then((data) => {
+        if (active) setReply(data);
+      })
+      .catch((err: unknown) => {
+        if (active) setError(err instanceof Error ? err.message : 'AI 详细回复加载失败');
+      });
+    return () => {
+      active = false;
+    };
+  }, [entry.id]);
+
+  return (
+    <div className="modal-overlay" onClick={onClose}>
+      <div className="modal wide usage-reply-modal" onClick={(event) => { event.stopPropagation(); }}>
+        <h3>AI 详细回复</h3>
+        <dl className="feedback-detail-meta">
+          <div><dt>用户</dt><dd>{reply?.username ?? entry.username ?? '-'}</dd></div>
+          <div><dt>应用名称</dt><dd>{reply?.app_name ?? entry.app_name ?? '应用已删除'}</dd></div>
+          <div><dt>消耗时间</dt><dd>{new Date(reply?.created_at ?? entry.created_at).toLocaleString('zh-CN')}</dd></div>
+          <div><dt>扣减 Token</dt><dd>{formatDelta(entry.delta_tokens)}</dd></div>
+        </dl>
+        {!reply && !error && <p className="input-hint usage-reply-loading">正在读取 AI 回复…</p>}
+        {error && <p className="error-banner">{error}</p>}
+        {reply && (
+          <div className="message assistant usage-reply-message">
+            <div className="message-content">
+              <div className="bubble">
+                <MarkdownMessage content={stripThinkContent(reply.answer)} />
+              </div>
+            </div>
+          </div>
+        )}
+        <div className="modal-actions">
+          <button aria-label="关闭AI详细回复" onClick={onClose}>关闭</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function AdminLedgerTable({ entries, showUsername = false }: { entries: LedgerEntry[]; showUsername?: boolean }) {
+  const [selectedEntry, setSelectedEntry] = useState<LedgerEntry | null>(null);
+
+  return (
+    <>
+      <div className="admin-ledger-scroll">
+        <table className="ledger-table admin-ledger-table">
+          <thead>
+            <tr>
+              <th>时间</th>
+              {showUsername && <th>用户</th>}
+              <th>类型</th>
+              <th>应用名称</th>
+              <th>来源余额</th>
+              <th>变动 Token</th>
+              <th>备注</th>
+              <th>AI 回复</th>
+            </tr>
+          </thead>
+          <tbody>
+            {entries.map((entry) => (
+              <tr key={entry.id}>
+                <td>{new Date(entry.created_at).toLocaleString('zh-CN')}</td>
+                {showUsername && <td>{entry.username ?? '-'}</td>}
+                <td>{formatEntryType(entry.entry_type)}</td>
+                <td>{entry.entry_type === 'usage' ? (entry.app_name ?? '应用已删除') : '-'}</td>
+                <td>{formatBucket(entry.bucket)}</td>
+                <td className={entry.delta_tokens > 0 ? 'positive' : 'negative'}>
+                  {formatDelta(entry.delta_tokens)}
+                </td>
+                <td>{entry.note ?? '-'}</td>
+                <td className="admin-ledger-reply-cell">
+                  {entry.entry_type !== 'usage' ? '-' : entry.ai_reply_available ? (
+                    <button className="secondary" onClick={() => { setSelectedEntry(entry); }}>
+                      查看AI详细回复
+                    </button>
+                  ) : '回复不可用'}
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+      {selectedEntry && <UsageReplyModal entry={selectedEntry} onClose={() => { setSelectedEntry(null); }} />}
+    </>
+  );
+}
+
 function LedgerPage({ onBack }: { onBack: () => void }) {
   const [entries, setEntries] = useState<LedgerEntry[]>([]);
   const [loading, setLoading] = useState(true);
@@ -1998,6 +2111,7 @@ function AdminUsersTab() {
   const [newPassword, setNewPassword] = useState('');
   const [confirmPassword, setConfirmPassword] = useState('');
   const [loading, setLoading] = useState(true);
+  const [ledgerLoading, setLedgerLoading] = useState(false);
   const [error, setError] = useState('');
   const [message, setMessage] = useState('');
 
@@ -2018,12 +2132,16 @@ function AdminUsersTab() {
   }, [loadUsers]);
 
   const openLedger = async (userId: string) => {
+    setLedgerEntries([]);
     setLedgerUserId(userId);
+    setLedgerLoading(true);
     try {
       const entries = await api<LedgerEntry[]>(`/admin/users/${userId}/ledger`);
       setLedgerEntries(entries);
     } catch (err) {
       setError(err instanceof Error ? err.message : '加载账本失败');
+    } finally {
+      setLedgerLoading(false);
     }
   };
 
@@ -2131,33 +2249,9 @@ function AdminUsersTab() {
         <div className="modal-overlay" onClick={() => { setLedgerUserId(null); }}>
           <div className="modal wide" onClick={(e) => { e.stopPropagation(); }}>
             <h3>用户账本</h3>
-            {ledgerEntries.length === 0 && <p className="empty">暂无明细</p>}
-            {ledgerEntries.length > 0 && (
-              <table className="ledger-table">
-                <thead>
-                  <tr>
-                    <th>时间</th>
-                    <th>类型</th>
-                    <th>来源余额</th>
-                    <th>变动 Token</th>
-                    <th>备注</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {ledgerEntries.map((entry) => (
-                    <tr key={entry.id}>
-                      <td>{new Date(entry.created_at).toLocaleString('zh-CN')}</td>
-                      <td>{formatEntryType(entry.entry_type)}</td>
-                      <td>{formatBucket(entry.bucket)}</td>
-                      <td className={entry.delta_tokens > 0 ? 'positive' : 'negative'}>
-                        {formatDelta(entry.delta_tokens)}
-                      </td>
-                      <td>{entry.note ?? '-'}</td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            )}
+            {ledgerLoading && <p>加载中...</p>}
+            {!ledgerLoading && ledgerEntries.length === 0 && <p className="empty">暂无明细</p>}
+            {!ledgerLoading && ledgerEntries.length > 0 && <AdminLedgerTable entries={ledgerEntries} />}
             <div className="modal-actions">
               <button onClick={() => { setLedgerUserId(null); }}>关闭</button>
             </div>
@@ -3250,8 +3344,59 @@ function AdminFeedbackTab() {
   );
 }
 
+function AdminUsageTab() {
+  const [pageData, setPageData] = useState<AdminUsagePage>({ items: [], total: 0, page: 1, page_size: 50 });
+  const [page, setPage] = useState(1);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState('');
+
+  useEffect(() => {
+    let active = true;
+    setLoading(true);
+    setError('');
+    api<AdminUsagePage>(`/admin/usage-records?page=${String(page)}&page_size=50`)
+      .then((data) => {
+        if (active) setPageData(data);
+      })
+      .catch((err: unknown) => {
+        if (active) setError(err instanceof Error ? err.message : '全部消耗记录加载失败');
+      })
+      .finally(() => {
+        if (active) setLoading(false);
+      });
+    return () => {
+      active = false;
+    };
+  }, [page]);
+
+  const totalPages = Math.max(1, Math.ceil(pageData.total / pageData.page_size));
+
+  return (
+    <div className="admin-tab admin-usage-tab">
+      {error && <p className="error-banner">{error}</p>}
+      {loading && <p>加载中...</p>}
+      {!loading && pageData.items.length === 0 && <p className="empty">暂无 Token 消耗记录。</p>}
+      {!loading && pageData.items.length > 0 && (
+        <>
+          <AdminLedgerTable entries={pageData.items} showUsername />
+          <div className="admin-usage-pagination">
+            <span>共 {pageData.total.toLocaleString()} 条</span>
+            <button className="secondary" disabled={page <= 1} onClick={() => { setPage((value) => value - 1); }}>
+              上一页
+            </button>
+            <span>第 {page} / {totalPages} 页</span>
+            <button className="secondary" disabled={page >= totalPages} onClick={() => { setPage((value) => value + 1); }}>
+              下一页
+            </button>
+          </div>
+        </>
+      )}
+    </div>
+  );
+}
+
 function AdminPage({ onBack }: { onBack: () => void }) {
-  const [tab, setTab] = useState<'users' | 'apps' | 'feedback'>('users');
+  const [tab, setTab] = useState<'users' | 'apps' | 'feedback' | 'usage'>('users');
 
   return (
     <div className="admin-page">
@@ -3271,11 +3416,15 @@ function AdminPage({ onBack }: { onBack: () => void }) {
         <button className={tab === 'feedback' ? 'active' : ''} onClick={() => { setTab('feedback'); }}>
           意见反馈
         </button>
+        <button className={tab === 'usage' ? 'active' : ''} onClick={() => { setTab('usage'); }}>
+          全部消耗记录
+        </button>
       </nav>
       <main className="admin-main">
         {tab === 'users' && <AdminUsersTab />}
         {tab === 'apps' && <AdminAppsTab />}
         {tab === 'feedback' && <AdminFeedbackTab />}
+        {tab === 'usage' && <AdminUsageTab />}
       </main>
     </div>
   );

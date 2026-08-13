@@ -4,13 +4,30 @@ import type { UserInputFormField, UserInputFormType, YiaiAppType } from '@yiai/s
 import { sortAppsByTagAndName } from '../services/app-order.js';
 import { authenticate } from '../auth/decorator.js';
 import { hashPassword } from '../auth/password.js';
-import { getAllUserAccounts, getLedgerEntries, rechargeTokens } from '../services/token-account.js';
-import { syncAppMetadata, toSafeApp, YiaiUpstreamError, type UpstreamAppMetadata } from '../services/yiai.js';
+import {
+  getAdminLedgerEntries,
+  getAdminUsageReplyTarget,
+  getAllUsageLedgerEntries,
+  getAllUserAccounts,
+  rechargeTokens,
+} from '../services/token-account.js';
+import {
+  getAdminUsageReply,
+  syncAppMetadata,
+  toSafeApp,
+  YiaiUpstreamError,
+  type UpstreamAppMetadata,
+} from '../services/yiai.js';
 import { cacheImageIconUrl, getLocalIconUrl, refreshAppIconCache } from '../services/icon-cache.js';
 
 interface AdminParams {
   userId: string;
   id: string;
+}
+
+interface AdminUsageQuery {
+  page?: string;
+  page_size?: string;
 }
 
 interface RechargeBody {
@@ -374,7 +391,7 @@ export function adminRoutes(fastify: FastifyInstance, options: { pool: Pool }) {
   fastify.get('/admin/users/:userId/ledger', { preHandler: authenticate }, async (request, reply) => {
     if (!assertAdmin(request, reply)) return;
     const params = request.params as AdminParams;
-    const entries = await getLedgerEntries(pool, params.userId);
+    const entries = await getAdminLedgerEntries(pool, params.userId);
     return entries.map((entry) => ({
       id: entry.id,
       created_at: entry.created_at,
@@ -382,7 +399,65 @@ export function adminRoutes(fastify: FastifyInstance, options: { pool: Pool }) {
       bucket: entry.bucket,
       delta_tokens: entry.delta_tokens,
       note: entry.note,
+      username: entry.username,
+      app_name: entry.app_name,
+      ai_reply_available: entry.ai_reply_available,
     }));
+  });
+
+  fastify.get('/admin/usage-records', { preHandler: authenticate }, async (request, reply) => {
+    if (!assertAdmin(request, reply)) return;
+    const query = request.query as AdminUsageQuery;
+    const page = Number(query.page ?? '1');
+    const pageSize = Number(query.page_size ?? '50');
+    if (!Number.isInteger(page) || page < 1 || !Number.isInteger(pageSize) || pageSize < 1 || pageSize > 100) {
+      return reply.status(400).send({ error: '分页参数无效' });
+    }
+    return getAllUsageLedgerEntries(pool, page, pageSize);
+  });
+
+  fastify.get('/admin/usage-records/:id/ai-reply', { preHandler: authenticate }, async (request, reply) => {
+    if (!assertAdmin(request, reply)) return;
+    const params = request.params as AdminParams;
+    const target = await getAdminUsageReplyTarget(pool, params.id);
+    if (!target) {
+      return reply.status(404).send({ error: '消耗记录不存在' });
+    }
+    if (target.entry_type !== 'usage' || target.delta_tokens >= 0) {
+      return reply.status(400).send({ error: '这不是一条 Token 消耗记录' });
+    }
+    if (!target.usage_record_id || !target.api_base_url || !target.api_key) {
+      return reply.status(410).send({ error: '关联应用已删除，AI 回复不可用' });
+    }
+    if (!target.conversation_id || !target.message_id) {
+      return reply.status(410).send({ error: '该历史消耗缺少会话或消息关联，AI 回复不可用' });
+    }
+
+    try {
+      const message = await getAdminUsageReply({
+        apiBaseUrl: target.api_base_url,
+        apiKey: target.api_key,
+        userId: target.user_id,
+        conversationId: target.conversation_id,
+        messageId: target.message_id,
+      });
+      if (!message) {
+        return await reply.status(404).send({ error: '上游历史中未找到这条 AI 回复' });
+      }
+      return {
+        ledger_entry_id: target.id,
+        username: target.username,
+        app_name: target.app_name,
+        created_at: target.created_at,
+        answer: message.answer,
+      };
+    } catch (error) {
+      if (error instanceof YiaiUpstreamError) {
+        request.log.warn({ err: error, ledgerEntryId: target.id }, 'Unable to load admin usage AI reply');
+        return reply.status(502).send({ error: '暂时无法读取上游 AI 回复，请稍后重试' });
+      }
+      throw error;
+    }
   });
 
   fastify.post('/admin/users/:userId/recharge', { preHandler: authenticate }, async (request, reply) => {

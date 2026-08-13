@@ -1178,6 +1178,8 @@ button:disabled {
 .admin-nav {
   display: flex;
   gap: 0.5rem;
+  overflow-x: auto;
+  white-space: nowrap;
   padding: 0.75rem 1rem;
   background: white;
   border-bottom: 1px solid #e0e0e0;
@@ -1186,6 +1188,7 @@ button:disabled {
 }
 
 .admin-nav button {
+  flex: 0 0 auto;
   background: transparent;
   color: #475569;
   border-radius: 0;
@@ -1237,6 +1240,39 @@ button:disabled {
 
 .admin-table td button {
   margin-right: 0.5rem;
+}
+
+.admin-ledger-reply-cell,
+.admin-ledger-reply-cell button {
+  white-space: nowrap;
+}
+
+.admin-ledger-scroll {
+  overflow-x: auto;
+}
+
+.admin-ledger-table {
+  min-width: 760px;
+}
+
+.usage-reply-message .message-content {
+  width: 100%;
+  max-width: 100%;
+}
+
+.usage-reply-loading {
+  margin: 0;
+}
+
+.admin-usage-pagination {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  flex-wrap: wrap;
+  gap: 0.75rem;
+  margin-top: 1rem;
+  color: #64748b;
+  font-size: 0.875rem;
 }
 
 .success-banner {
