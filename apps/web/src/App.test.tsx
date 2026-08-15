@@ -273,6 +273,7 @@ describe('AdminAppsTab', () => {
               api_key_preview: 'test-k…-key',
               enabled: true,
               supports_images: false,
+              token_multiplier: 1,
               sort_order: 1,
               requires_new_conversation_inputs: false,
             },
@@ -290,6 +291,7 @@ describe('AdminAppsTab', () => {
               api_key_preview: 'input-…-key',
               enabled: true,
               supports_images: true,
+              token_multiplier: 2,
               sort_order: 2,
               requires_new_conversation_inputs: true,
             },
@@ -845,6 +847,10 @@ describe('AdminAppsTab', () => {
     fireEvent.click(screen.getAllByRole('button', { name: '平台设置' })[0]);
 
     expect(screen.getByRole('heading', { name: '平台设置：Test App' })).toBeInTheDocument();
+    const tokenMultiplier = screen.getByRole('spinbutton', { name: 'Token 消耗倍率（正整数）' });
+    expect(tokenMultiplier).toHaveValue(1);
+    fireEvent.change(tokenMultiplier, { target: { value: '3' } });
+    expect(screen.getByText(/实际扣减和 AI 回复气泡显示值 = 上游原始 Token × 倍率/)).toBeInTheDocument();
     const supportsImages = screen.getByRole('checkbox', { name: '是否支持图片' });
     expect(supportsImages).not.toBeChecked();
     fireEvent.click(supportsImages);
@@ -865,12 +871,41 @@ describe('AdminAppsTab', () => {
       expect(body).toEqual({
         enabled: true,
         supports_images: true,
+        token_multiplier: 3,
         name: 'Renamed App',
         description: 'Platform description',
         icon: '🧠',
         tags: ['哲学', '国学'],
       });
     });
+  });
+
+  it('rejects a non-positive token multiplier before saving platform settings', async () => {
+    render(<App />);
+
+    await screen.findByText('应用中心');
+    fireEvent.click(screen.getByRole('button', { name: '管理后台' }));
+    await waitFor(() => {
+      expect(screen.getByRole('button', { name: '应用管理' })).toBeInTheDocument();
+    });
+    fireEvent.click(screen.getByRole('button', { name: '应用管理' }));
+    await waitFor(() => {
+      expect(screen.getAllByRole('button', { name: '平台设置' })).toHaveLength(2);
+    });
+    fireEvent.click(screen.getAllByRole('button', { name: '平台设置' })[0]);
+
+    const tokenMultiplier = screen.getByRole('spinbutton', { name: 'Token 消耗倍率（正整数）' });
+    fireEvent.change(tokenMultiplier, { target: { value: '0' } });
+    const form = tokenMultiplier.closest('form');
+    expect(form).not.toBeNull();
+    fireEvent.submit(form as HTMLFormElement);
+
+    expect(await screen.findByText('Token 消耗倍率必须是 1 到 1,000,000 的整数')).toBeInTheDocument();
+    const patchCall = fetchMock.mock.calls.find(([url, init]) => {
+      const callUrl = typeof url === 'string' ? url : url.url;
+      return callUrl.endsWith('/admin/apps/app-1') && init?.method === 'PATCH';
+    });
+    expect(patchCall).toBeUndefined();
   });
 
   it('uses direct labeled switches for enabled and image support, while keeping input collection automatic', async () => {

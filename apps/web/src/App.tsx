@@ -170,6 +170,7 @@ interface AdminApp {
   api_key_preview?: string | null;
   enabled: boolean;
   supports_images: boolean;
+  token_multiplier: number;
   sort_order: number;
   requires_new_conversation_inputs: boolean;
   agent_input_form: UserInputFormField[];
@@ -208,6 +209,7 @@ const MAX_DRAFT_IMAGE_BYTES = 200 * 1024;
 const MAX_DRAFT_IMAGE_SIZE_LABEL = '200KB';
 const MAX_FEEDBACK_SCREENSHOT_BYTES = 5 * 1024 * 1024;
 const MAX_FEEDBACK_SCREENSHOT_SIZE_LABEL = '5MB';
+const MAX_TOKEN_MULTIPLIER = 1_000_000;
 
 function formatMessageMeta(msg: ChatMessage): string {
   const parts: string[] = [];
@@ -2871,6 +2873,11 @@ function AdminAppsTab() {
       .split(/[,，]/)
       .map((tag) => tag.trim())
       .filter((tag) => tag !== '');
+    const tokenMultiplier = Number((form.elements.namedItem('token_multiplier') as HTMLInputElement).value);
+    if (!Number.isInteger(tokenMultiplier) || tokenMultiplier < 1 || tokenMultiplier > MAX_TOKEN_MULTIPLIER) {
+      setError('Token 消耗倍率必须是 1 到 1,000,000 的整数');
+      return;
+    }
     let agentInputForm: unknown[] | undefined;
     if (settingsApp.app_type === 'agent') {
       const raw = (form.elements.namedItem('agent_input_form') as HTMLTextAreaElement).value;
@@ -2893,6 +2900,7 @@ function AdminAppsTab() {
           body: JSON.stringify({
             enabled,
             supports_images: supportsImages,
+            token_multiplier: tokenMultiplier,
             name,
             description,
             tags,
@@ -2951,7 +2959,7 @@ function AdminAppsTab() {
 
   return (
     <div className="admin-tab">
-      {error && <p className="error-banner">{error}</p>}
+      {error && !settingsApp && <p className="error-banner">{error}</p>}
       {message && <p className="success-banner">{message}</p>}
       <div className="admin-actions">
         <div>
@@ -3039,7 +3047,15 @@ function AdminAppsTab() {
                   </div>
                 </td>
                 <td className="admin-app-actions">
-                  <button className="secondary" onClick={() => { setSettingsApp(app); }}>平台设置</button>
+                  <button
+                    className="secondary"
+                    onClick={() => {
+                      setError('');
+                      setSettingsApp(app);
+                    }}
+                  >
+                    平台设置
+                  </button>
                   <button
                     className="secondary"
                     onClick={() => {
@@ -3150,6 +3166,7 @@ function AdminAppsTab() {
           <div className="modal" onClick={(event) => { event.stopPropagation(); }}>
             <h3>平台设置：{settingsApp.name || settingsApp.slug}</h3>
             <p className="input-hint">这里的名称、说明、图标和标签为平台自定义属性。点击“同步 YIAI”后会被 YIAI 最新信息覆盖。</p>
+            {error && <p className="error">{error}</p>}
             <form onSubmit={handleSettingsSubmit}>
               <label>
                 应用名称
@@ -3167,6 +3184,21 @@ function AdminAppsTab() {
                 标签（用逗号分隔）
                 <input name="tags" type="text" defaultValue={(settingsApp.tags ?? []).join('，')} placeholder="例如：哲学，国学" />
               </label>
+              <label>
+                Token 消耗倍率（正整数）
+                <input
+                  name="token_multiplier"
+                  type="number"
+                  min={1}
+                  max={MAX_TOKEN_MULTIPLIER}
+                  step={1}
+                  defaultValue={settingsApp.token_multiplier}
+                  required
+                />
+              </label>
+              <p className="input-hint">
+                实际扣减和 AI 回复气泡显示值 = 上游原始 Token × 倍率；只影响保存后的新回复，且同步 YIAI 不会覆盖。
+              </p>
               <label className="checkbox">
                 <input name="supports_images" type="checkbox" defaultChecked={settingsApp.supports_images} />
                 是否支持图片

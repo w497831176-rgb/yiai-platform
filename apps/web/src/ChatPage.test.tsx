@@ -122,6 +122,7 @@ describe('ChatPage latest conversation inputs restore', () => {
       expect(body.query).toBe('继续问诊');
       expect(body.inputs).toEqual({ name: '张三', gender: '男' });
     });
+    expect(await screen.findByText(/本次消耗：8 Tokens/)).toBeInTheDocument();
   });
 
   it('renders an assistant history reply as Markdown', async () => {
@@ -142,7 +143,7 @@ describe('ChatPage latest conversation inputs restore', () => {
       }
       if (url.endsWith('/conversations')) return Promise.resolve(new Response(JSON.stringify([{ id: 'markdown-conv', name: 'Markdown', inputs: {}, status: 'normal', updated_at: 1, created_at: 1 }])));
       if (url.includes('/conversations/') && url.endsWith('/messages')) {
-        return Promise.resolve(new Response(JSON.stringify([{ id: 'message-1', conversation_id: 'markdown-conv', query: 'q', answer: '## 命盘结果\n\n| 项目 | 内容 |\n| --- | --- |\n| 命宫 | 戌 |', created_at: 1 }])));
+        return Promise.resolve(new Response(JSON.stringify([{ id: 'message-1', conversation_id: 'markdown-conv', query: 'q', answer: '## 命盘结果\n\n| 项目 | 内容 |\n| --- | --- |\n| 命宫 | 戌 |', metadata: { usage: { total_tokens: 45 } }, created_at: 1 }])));
       }
       return Promise.reject(new Error(`Unexpected fetch: ${url}`));
     });
@@ -160,6 +161,7 @@ describe('ChatPage latest conversation inputs restore', () => {
     await waitFor(() => {
       expect(screen.getByRole('heading', { name: '命盘结果' })).toBeInTheDocument();
       expect(screen.getByRole('table')).toBeInTheDocument();
+      expect(screen.getByText(/本次消耗：45 Tokens/)).toBeInTheDocument();
     });
   });
 

@@ -56,6 +56,7 @@ interface UpdateAppSettingsBody {
   icon?: string;
   tags?: string[];
   supports_images?: boolean;
+  token_multiplier?: number;
   agent_input_form?: unknown;
 }
 
@@ -79,6 +80,7 @@ interface AdminAppRow {
   api_key: string;
   enabled: boolean;
   supports_images: boolean;
+  token_multiplier: number;
   sort_order: number;
   requires_new_conversation_inputs: boolean;
   agent_input_form: UserInputFormField[];
@@ -99,8 +101,10 @@ interface AdminUserAccount {
 }
 
 const ADMIN_APP_COLUMNS = `id, slug, name, description, icon, icon_type, icon_background,
-  api_base_url, api_key, enabled, supports_images, sort_order, app_type, requires_new_conversation_inputs, agent_input_form,
+  api_base_url, api_key, enabled, supports_images, token_multiplier, sort_order, app_type, requires_new_conversation_inputs, agent_input_form,
   created_at, updated_at, icon_cache_filename, icon_cache_content_type, icon_cached_at, tags, icon_source`;
+
+const MAX_TOKEN_MULTIPLIER = 1_000_000;
 
 function assertAdmin(request: FastifyRequest, reply: FastifyReply): boolean {
   const user = request.user;
@@ -117,6 +121,13 @@ function assertAdmin(request: FastifyRequest, reply: FastifyReply): boolean {
 
 function isNonEmptyString(value: unknown): value is string {
   return typeof value === 'string' && value.trim() !== '';
+}
+
+function isValidTokenMultiplier(value: unknown): value is number {
+  return typeof value === 'number'
+    && Number.isInteger(value)
+    && value >= 1
+    && value <= MAX_TOKEN_MULTIPLIER;
 }
 
 function normalizeBaseUrl(value: unknown): string | null {
@@ -276,6 +287,7 @@ function toAdminAppResponse(row: AdminAppRow, duplicateOfSlug: string | null = n
     api_key_configured: row.api_key !== '',
     api_key_preview: maskApiKey(row.api_key),
     enabled: row.enabled,
+    token_multiplier: row.token_multiplier,
     app_type: row.app_type,
     agent_input_form: row.app_type === 'agent' ? row.agent_input_form : [],
     connection_duplicate_of_slug: duplicateOfSlug,
@@ -632,6 +644,7 @@ export function adminRoutes(fastify: FastifyInstance, options: { pool: Pool }) {
       body.icon === undefined &&
       body.tags === undefined &&
       body.supports_images === undefined &&
+      body.token_multiplier === undefined &&
       body.agent_input_form === undefined
     ) {
       return reply.status(400).send({ error: '请至少修改一项平台设置' });
@@ -641,6 +654,9 @@ export function adminRoutes(fastify: FastifyInstance, options: { pool: Pool }) {
     }
     if (body.supports_images !== undefined && typeof body.supports_images !== 'boolean') {
       return reply.status(400).send({ error: '是否支持图片格式错误' });
+    }
+    if (body.token_multiplier !== undefined && !isValidTokenMultiplier(body.token_multiplier)) {
+      return reply.status(400).send({ error: 'Token 消耗倍率必须是 1 到 1,000,000 的整数' });
     }
     if (body.name !== undefined && !isNonEmptyString(body.name)) {
       return reply.status(400).send({ error: '应用名称不能为空' });
@@ -688,6 +704,7 @@ export function adminRoutes(fastify: FastifyInstance, options: { pool: Pool }) {
 
     if (body.enabled !== undefined) addValue('enabled', body.enabled);
     if (body.supports_images !== undefined) addValue('supports_images', body.supports_images);
+    if (body.token_multiplier !== undefined) addValue('token_multiplier', body.token_multiplier);
     if (name !== undefined) addValue('name', name);
     if (description !== undefined) addValue('description', description);
     if (tags !== undefined) addValue('tags', tags);

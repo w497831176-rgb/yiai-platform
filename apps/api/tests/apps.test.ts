@@ -369,6 +369,43 @@ describe('App Routes', () => {
     expect(body[1].id).toBe('msg-2');
   });
 
+  it('uses the locally charged token amount when loading message history', async () => {
+    const appResult = await pool.query<{ id: string }>(
+      'SELECT id FROM yiai_apps WHERE slug = $1',
+      ['zhouyi-divination']
+    );
+    const userResult = await pool.query<{ id: string }>('SELECT id FROM users WHERE username = $1', ['test_user']);
+    await pool.query(
+      `INSERT INTO yiai_usage_records (user_id, app_id, conversation_id, message_id, total_tokens)
+       VALUES ($1, $2, $3, $4, $5)`,
+      [userResult.rows[0].id, appResult.rows[0].id, 'conv-billed', 'msg-billed', 45]
+    );
+    fetchMock.mockResolvedValueOnce(
+      new Response(JSON.stringify({
+        data: [{
+          id: 'msg-billed',
+          conversation_id: 'conv-billed',
+          query: 'q',
+          answer: 'a',
+          created_at: 100,
+          metadata: { usage: { total_tokens: 15 } },
+        }],
+      }))
+    );
+
+    const app = await buildTestApp(pool);
+    const token = await loginUser(app, 'test_user', 'testpass');
+    const response = await app.inject({
+      method: 'GET',
+      url: '/api/apps/zhouyi-divination/conversations/conv-billed/messages',
+      headers: { Authorization: `Bearer ${token}` },
+    });
+
+    expect(response.statusCode).toBe(200);
+    const body = JSON.parse(response.body) as YiaiMessage[];
+    expect(body[0].metadata?.usage?.total_tokens).toBe(45);
+  });
+
   it('proxies chat with correct upstream body and deducts tokens', async () => {
     const stream = new ReadableStream({
       start(controller) {
@@ -422,6 +459,53 @@ describe('App Routes', () => {
     expect(ledgerResult.rows).toHaveLength(1);
     expect(ledgerResult.rows[0].bucket).toBe('gift');
     expect(ledgerResult.rows[0].delta_tokens).toBe(-15);
+  });
+
+  it('multiplies live usage, stored usage, ledger deduction, and account deduction', async () => {
+    await pool.query('UPDATE yiai_apps SET token_multiplier = 3 WHERE slug = $1', ['zhouyi-divination']);
+    const stream = new ReadableStream({
+      start(controller) {
+        controller.enqueue(
+          new TextEncoder().encode(
+            'data: {"event":"message","answer":"Hello"}\n\ndata: {"event":"message_end","conversation_id":"conv-multiplied","message_id":"msg-multiplied","task_id":"task-multiplied","metadata":{"usage":{"total_tokens":15}}}\n\n'
+          )
+        );
+        controller.close();
+      },
+    });
+    fetchMock.mockResolvedValueOnce(new Response(stream));
+
+    const app = await buildTestApp(pool);
+    const token = await loginUser(app, 'test_user', 'testpass');
+    const userResult = await pool.query<{ id: string }>('SELECT id FROM users WHERE username = $1', ['test_user']);
+    const beforeResult = await pool.query<{ gift_tokens: number | string }>(
+      'SELECT gift_tokens FROM token_accounts WHERE user_id = $1',
+      [userResult.rows[0].id]
+    );
+
+    const response = await app.inject({
+      method: 'POST',
+      url: '/api/apps/zhouyi-divination/chat',
+      headers: { Authorization: `Bearer ${token}` },
+      payload: { query: 'hi', conversation_id: 'conv-multiplied' },
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.body).toContain('"total_tokens":45');
+    const usageResult = await pool.query<{ total_tokens: number | string }>(
+      'SELECT total_tokens FROM yiai_usage_records WHERE message_id = $1',
+      ['msg-multiplied']
+    );
+    expect(Number(usageResult.rows[0].total_tokens)).toBe(45);
+    const ledgerResult = await pool.query<{ delta_tokens: number | string }>(
+      "SELECT delta_tokens FROM token_ledger_entries WHERE entry_type = 'usage'"
+    );
+    expect(Number(ledgerResult.rows[0].delta_tokens)).toBe(-45);
+    const afterResult = await pool.query<{ gift_tokens: number | string }>(
+      'SELECT gift_tokens FROM token_accounts WHERE user_id = $1',
+      [userResult.rows[0].id]
+    );
+    expect(Number(afterResult.rows[0].gift_tokens)).toBe(Number(beforeResult.rows[0].gift_tokens) - 45);
   });
 
   it('proxies chat with files in upstream body', async () => {
@@ -589,6 +673,7 @@ describe('App Routes', () => {
   });
 
   it('does not double deduct when duplicate message_end events arrive', async () => {
+    await pool.query('UPDATE yiai_apps SET token_multiplier = 3 WHERE slug = $1', ['zhouyi-divination']);
     const stream = new ReadableStream({
       start(controller) {
         controller.enqueue(
@@ -613,16 +698,18 @@ describe('App Routes', () => {
     });
 
     expect(response.statusCode).toBe(200);
+    expect(response.body.match(/"total_tokens":30/g)).toHaveLength(2);
 
     const usageResult = await pool.query('SELECT * FROM yiai_usage_records');
     expect(usageResult.rows).toHaveLength(1);
 
     const ledgerResult = await pool.query<{ delta_tokens: number }>("SELECT * FROM token_ledger_entries WHERE entry_type = 'usage'");
     expect(ledgerResult.rows).toHaveLength(1);
-    expect(ledgerResult.rows[0].delta_tokens).toBe(-10);
+    expect(ledgerResult.rows[0].delta_tokens).toBe(-30);
   });
 
   it('ignores unknown workflow events without error', async () => {
+    await pool.query('UPDATE yiai_apps SET token_multiplier = 3 WHERE slug = $1', ['zhouyi-divination']);
     const stream = new ReadableStream({
       start(controller) {
         controller.enqueue(
@@ -647,6 +734,9 @@ describe('App Routes', () => {
     });
 
     expect(response.statusCode).toBe(200);
+    expect(response.body).toContain('"total_tokens":5');
+    const usageResult = await pool.query('SELECT id FROM yiai_usage_records');
+    expect(usageResult.rows).toHaveLength(0);
   });
 
   it('requires required user_input_form fields for shouyi app and normalizes string[] options', async () => {

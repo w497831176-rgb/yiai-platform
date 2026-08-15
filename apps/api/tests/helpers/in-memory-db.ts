@@ -44,6 +44,7 @@ export async function createInMemoryPool(): Promise<Pool> {
     '011_add_yiai_app_image_support.sql',
     '012_add_login_streak_rewards.sql',
     '013_create_feedbacks.sql',
+    '014_add_yiai_app_token_multiplier.sql',
   ];
 
   for (const file of files) {

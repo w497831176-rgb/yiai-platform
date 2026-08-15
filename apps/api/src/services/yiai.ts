@@ -565,17 +565,17 @@ export async function listMessages(
   const response = await yiaiGet<YiaiApiResponse<YiaiMessage>>(url, app.api_key);
   const messages = response.data ?? [];
 
-  const usageResult = await pool.query<{ message_id: string; total_tokens: number }>(
+  const usageResult = await pool.query<{ message_id: string; total_tokens: number | string }>(
     `SELECT message_id, total_tokens
      FROM yiai_usage_records
-     WHERE user_id = $1 AND conversation_id = $2`,
-    [userId, conversationId]
+     WHERE user_id = $1 AND conversation_id = $2 AND app_id = $3`,
+    [userId, conversationId, app.id]
   );
-  const usageMap = new Map(usageResult.rows.map((row) => [row.message_id, row.total_tokens]));
+  const usageMap = new Map(usageResult.rows.map((row) => [row.message_id, Number(row.total_tokens)]));
 
   for (const message of messages) {
     const recorded = usageMap.get(message.id);
-    if (recorded !== undefined && message.metadata?.usage?.total_tokens === undefined) {
+    if (recorded !== undefined) {
       message.metadata = {
         ...(message.metadata ?? {}),
         usage: {

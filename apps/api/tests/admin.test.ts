@@ -84,6 +84,7 @@ describe('Admin Routes', () => {
     expect(body[0]).toHaveProperty('icon_type');
     expect(body[0]).toHaveProperty('icon_url');
     expect(body[0]).toHaveProperty('icon_background');
+    expect(body[0].token_multiplier).toBe(1);
   });
 
   it('sorts admin apps by tag pinyin then app name, with untagged apps last', async () => {
@@ -134,6 +135,7 @@ describe('Admin Routes', () => {
     expect(created.icon).toBe('🤖');
     expect(created.requires_new_conversation_inputs).toBe(true);
     expect(created.supports_images).toBe(false);
+    expect(created.token_multiplier).toBe(1);
 
     // Verify upstream endpoints were called (metadata + icon refresh /site)
     expect(fetchMock).toHaveBeenCalledTimes(4);
@@ -272,6 +274,7 @@ describe('Admin Routes', () => {
       payload: {
         enabled: false,
         supports_images: true,
+        token_multiplier: 3,
         name: 'Platform Name',
         description: 'Platform description',
         icon: '🧠',
@@ -290,8 +293,9 @@ describe('Admin Routes', () => {
       api_key: string;
       enabled: boolean;
       supports_images: boolean;
+      token_multiplier: number;
     }>(
-      'SELECT name, description, icon, icon_type, tags, icon_source, api_key, enabled, supports_images FROM yiai_apps WHERE id = $1',
+      'SELECT name, description, icon, icon_type, tags, icon_source, api_key, enabled, supports_images, token_multiplier FROM yiai_apps WHERE id = $1',
       [appId]
     );
     expect(dbResult.rows[0]).toMatchObject({
@@ -304,7 +308,32 @@ describe('Admin Routes', () => {
       api_key: 'initial-key',
       enabled: false,
       supports_images: true,
+      token_multiplier: 3,
     });
+  });
+
+  it('rejects token multipliers that are not positive integers', async () => {
+    const app = await buildApp(pool);
+    await createTestUser(pool, 'admin_user', 'admin', 'testpass');
+    const appId = await createTestApp(pool, { slug: 'multiplier-validation' });
+    const token = await login(app, 'admin_user', 'testpass');
+
+    for (const tokenMultiplier of [0, -1, 1.5, 1_000_001, '2', null]) {
+      const response = await app.inject({
+        method: 'PATCH',
+        url: `/api/admin/apps/${appId}`,
+        headers: { Authorization: `Bearer ${token}` },
+        payload: { token_multiplier: tokenMultiplier },
+      });
+      expect(response.statusCode).toBe(400);
+      expect(response.body).toContain('Token 消耗倍率');
+    }
+
+    const dbResult = await pool.query<{ token_multiplier: number }>(
+      'SELECT token_multiplier FROM yiai_apps WHERE id = $1',
+      [appId]
+    );
+    expect(dbResult.rows[0].token_multiplier).toBe(1);
   });
 
   it('deletes an app only for an admin', async () => {
@@ -384,6 +413,7 @@ describe('Admin Routes', () => {
       api_key: 'secret-key',
       supports_images: true,
     });
+    await pool.query('UPDATE yiai_apps SET token_multiplier = 4 WHERE id = $1', [appId]);
 
     fetchMock
       .mockResolvedValueOnce(new Response(JSON.stringify({ name: 'Synced Name', tags: ['医学', '养生'] })))
@@ -408,12 +438,14 @@ describe('Admin Routes', () => {
     expect(synced.icon).toBe('🔄');
     expect(synced.tags).toEqual(['医学', '养生']);
     expect(synced.supports_images).toBe(true);
+    expect(synced.token_multiplier).toBe(4);
 
-    const dbResult = await pool.query<{ supports_images: boolean }>(
-      'SELECT supports_images FROM yiai_apps WHERE id = $1',
+    const dbResult = await pool.query<{ supports_images: boolean; token_multiplier: number }>(
+      'SELECT supports_images, token_multiplier FROM yiai_apps WHERE id = $1',
       [appId]
     );
     expect(dbResult.rows[0].supports_images).toBe(true);
+    expect(dbResult.rows[0].token_multiplier).toBe(4);
   });
 
   it('sync updates requires_new_conversation_inputs from false to true', async () => {

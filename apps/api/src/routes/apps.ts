@@ -289,13 +289,19 @@ export function appRoutes(fastify: FastifyInstance, options: { pool: Pool }): vo
     }
 
     let upstreamResponse: Response;
-    let appRow: { id: string; requires_new_conversation_inputs: boolean; supports_images: boolean } | undefined;
+    let appRow: {
+      id: string;
+      requires_new_conversation_inputs: boolean;
+      supports_images: boolean;
+      token_multiplier: number;
+    } | undefined;
     try {
       const appResult = await pool.query<{
         id: string;
         requires_new_conversation_inputs: boolean;
         supports_images: boolean;
-      }>('SELECT id, requires_new_conversation_inputs, supports_images FROM yiai_apps WHERE slug = $1 AND enabled = true', [slug]);
+        token_multiplier: number;
+      }>('SELECT id, requires_new_conversation_inputs, supports_images, token_multiplier FROM yiai_apps WHERE slug = $1 AND enabled = true', [slug]);
       appRow = appResult.rows.at(0);
       if (!appRow) {
         return await reply.status(404).send({ error: `应用不存在: ${slug}` });
@@ -374,7 +380,7 @@ export function appRoutes(fastify: FastifyInstance, options: { pool: Pool }): vo
           reply.raw.write('\n');
           continue;
         }
-        reply.raw.write(`${trimmed}\n`);
+        let outputLine = trimmed;
 
         // Parse SSE data line for usage tracking and token deduction
         if (trimmed.startsWith('data:') && appId) {
@@ -384,32 +390,61 @@ export function appRoutes(fastify: FastifyInstance, options: { pool: Pool }): vo
             if (eventData.event === 'message_end') {
               const metadata = eventData.metadata as Record<string, unknown> | undefined;
               const usage = metadata?.usage as Record<string, unknown> | undefined;
-              const totalTokens = typeof usage?.total_tokens === 'number' ? usage.total_tokens : undefined;
+              const rawTotalTokens = typeof usage?.total_tokens === 'number' ? usage.total_tokens : undefined;
               const messageId = typeof eventData.message_id === 'string' ? eventData.message_id : undefined;
-              if (totalTokens !== undefined && totalTokens >= 0 && messageId) {
-                const client = await pool.connect();
-                try {
-                  await client.query('BEGIN');
-                  const usageRecordId = await recordUsage(client, {
-                    userId,
-                    appId,
-                    conversationId: typeof eventData.conversation_id === 'string' ? eventData.conversation_id : undefined,
-                    messageId,
-                    taskId: typeof eventData.task_id === 'string' ? eventData.task_id : undefined,
-                    totalTokens,
-                  });
-                  await deductForUsage(client, userId, totalTokens, usageRecordId);
-                  await client.query('COMMIT');
-                } catch (error) {
-                  await client.query('ROLLBACK');
-                  // Unique violation on message_id means duplicate upstream event; ignore idempotently
-                  if (error && typeof error === 'object' && 'code' in error && error.code === '23505') {
-                    request.log.warn({ messageId }, 'Duplicate message_end usage record ignored');
-                  } else {
-                    request.log.error(error);
+              if (rawTotalTokens !== undefined && Number.isSafeInteger(rawTotalTokens) && rawTotalTokens >= 0) {
+                const totalTokens = rawTotalTokens * appRow.token_multiplier;
+                if (!Number.isSafeInteger(totalTokens)) {
+                  request.log.error(
+                    { rawTotalTokens, tokenMultiplier: appRow.token_multiplier },
+                    'Multiplied token usage exceeds the safe integer range'
+                  );
+                } else if (messageId) {
+                  let billedTokensForOutput: number | undefined;
+                  const client = await pool.connect();
+                  try {
+                    await client.query('BEGIN');
+                    const usageRecordId = await recordUsage(client, {
+                      userId,
+                      appId,
+                      conversationId: typeof eventData.conversation_id === 'string' ? eventData.conversation_id : undefined,
+                      messageId,
+                      taskId: typeof eventData.task_id === 'string' ? eventData.task_id : undefined,
+                      totalTokens,
+                    });
+                    await deductForUsage(client, userId, totalTokens, usageRecordId);
+                    await client.query('COMMIT');
+                    billedTokensForOutput = totalTokens;
+                  } catch (error) {
+                    await client.query('ROLLBACK');
+                    // Unique violation on message_id means duplicate upstream event; ignore idempotently
+                    if (error && typeof error === 'object' && 'code' in error && error.code === '23505') {
+                      request.log.warn({ messageId }, 'Duplicate message_end usage record ignored');
+                      const existingUsage = await client.query<{ total_tokens: number | string }>(
+                        'SELECT total_tokens FROM yiai_usage_records WHERE message_id = $1',
+                        [messageId]
+                      );
+                      const existingTotalTokens = Number(existingUsage.rows.at(0)?.total_tokens);
+                      if (Number.isSafeInteger(existingTotalTokens) && existingTotalTokens >= 0) {
+                        billedTokensForOutput = existingTotalTokens;
+                      }
+                    } else {
+                      request.log.error(error);
+                    }
+                  } finally {
+                    client.release();
                   }
-                } finally {
-                  client.release();
+
+                  if (billedTokensForOutput !== undefined) {
+                    eventData.metadata = {
+                      ...(metadata ?? {}),
+                      usage: {
+                        ...(usage ?? {}),
+                        total_tokens: billedTokensForOutput,
+                      },
+                    };
+                    outputLine = `data: ${JSON.stringify(eventData)}`;
+                  }
                 }
               }
             }
@@ -417,6 +452,8 @@ export function appRoutes(fastify: FastifyInstance, options: { pool: Pool }): vo
             // Ignore malformed JSON in SSE data
           }
         }
+
+        reply.raw.write(`${outputLine}\n`);
       }
 
       void processChunk();
